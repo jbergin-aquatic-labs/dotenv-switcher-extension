@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Background rounded square -->
+  <rect x="4" y="4" width="120" height="120" rx="24" ry="24" fill="#1a1a2e"/>
+  
+  <!-- Toggle track -->
+  <rect x="24" y="46" width="80" height="36" rx="18" ry="18" fill="#16213e"/>
+  <rect x="24" y="46" width="80" height="36" rx="18" ry="18" fill="none" stroke="#0f3460" stroke-width="2"/>
+  
+  <!-- Active glow behind the toggle knob -->
+  <circle cx="86" cy="64" r="20" fill="#e94560" opacity="0.2"/>
+  
+  <!-- Toggle knob (switched to the right = active) -->
+  <circle cx="86" cy="64" r="14" fill="#e94560"/>
+  
+  <!-- The "dot" in .env - small playful dot on the knob -->
+  <circle cx="86" cy="64" r="4" fill="#1a1a2e"/>
+  
+  <!-- Small env file icons on each side to suggest swapping -->
+  <!-- Left file (faded, inactive) -->
+  <g opacity="0.35">
+    <rect x="14" y="90" width="16" height="20" rx="2" fill="#0f3460"/>
+    <rect x="17" y="95" width="10" height="1.5" rx="0.75" fill="#e94560"/>
+    <rect x="17" y="99" width="7" height="1.5" rx="0.75" fill="#e94560"/>
+    <rect x="17" y="103" width="9" height="1.5" rx="0.75" fill="#e94560"/>
+  </g>
+  
+  <!-- Right file (bright, active) -->
+  <g opacity="0.9">
+    <rect x="98" y="90" width="16" height="20" rx="2" fill="#0f3460"/>
+    <rect x="101" y="95" width="10" height="1.5" rx="0.75" fill="#e94560"/>
+    <rect x="101" y="99" width="7" height="1.5" rx="0.75" fill="#e94560"/>
+    <rect x="101" y="103" width="9" height="1.5" rx="0.75" fill="#e94560"/>
+  </g>
+  
+  <!-- Swap arrows (subtle, between the files) -->
+  <g stroke="#e94560" stroke-width="1.5" fill="none" opacity="0.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Arrow right -->
+    <path d="M38 96 L56 96"/>
+    <path d="M52 93 L56 96 L52 99"/>
+    <!-- Arrow left -->
+    <path d="M90 104 L72 104"/>
+    <path d="M76 101 L72 104 L76 107"/>
+  </g>
+</svg>
