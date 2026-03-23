@@ -33,7 +33,7 @@
         },
         {
           "id": "envSwitcher.projectFolders",
-          "name": "Project Folders"
+          "name": "Target directories"
         }
       ]
     },
@@ -60,12 +60,40 @@
         "title": "Open in Editor"
       },
       {
+        "command": "envSwitcher.revealEnvInExplorer",
+        "title": "Reveal in Explorer"
+      },
+      {
+        "command": "envSwitcher.duplicateEnvFile",
+        "title": "Duplicate Env File"
+      },
+      {
+        "command": "envSwitcher.openEnvFolderExternally",
+        "title": "Env Switcher: Open .envs Folder in System File Manager"
+      },
+      {
         "command": "envSwitcher.backupNow",
         "title": "Env Switcher: Backup .envs to Local Storage"
       },
       {
         "command": "envSwitcher.restoreBackup",
         "title": "Env Switcher: Restore .envs from Local Backup"
+      },
+      {
+        "command": "envSwitcher.vaultSnapshotNow",
+        "title": "Env Switcher: Save Vault Snapshot Now"
+      },
+      {
+        "command": "envSwitcher.openVaultFolder",
+        "title": "Env Switcher: Open Vault Folder for This Workspace"
+      },
+      {
+        "command": "envSwitcher.restoreFromVault",
+        "title": "Env Switcher: Restore from Vault…"
+      },
+      {
+        "command": "envSwitcher.restoreEnvFileFromVault",
+        "title": "Restore This File from Vault…"
       }
     ],
     "configuration": {
@@ -81,18 +109,69 @@
           "default": ".env",
           "description": "Target .env filename to symlink to (relative to each target directory)"
         },
+        "envSwitcher.targetDirectories": {
+          "type": "array",
+          "default": [
+            "."
+          ],
+          "description": "Directories (relative to workspace root) where the .env symlink is created. Use \".\" for the workspace root. Example: [\".\", \"frontend\", \"backend\"].",
+          "items": {
+            "type": "string"
+          }
+        },
         "envSwitcher.autoBackup": {
           "type": "boolean",
           "default": true,
           "description": "Automatically back up the .envs folder to VS Code's local storage whenever it changes. Backups survive repo deletion and can be restored into a fresh clone."
         },
+        "envSwitcher.backupDebounceMs": {
+          "type": "number",
+          "default": 500,
+          "minimum": 0,
+          "description": "Debounce delay in milliseconds before refreshing views and running an automatic backup after .envs or .env files change. Set to 0 to disable debouncing."
+        },
         "envSwitcher.excludedFolders": {
           "type": "array",
           "default": ["node_modules", ".git", ".vscode", "dist", "build", ".next", "coverage", "__pycache__", ".cache"],
-          "description": "Folders to hide from the Project Folders tree view.",
+          "description": "Folder names ignored when scanning the workspace (kept for compatibility; target dirs are configured with envSwitcher.targetDirectories).",
           "items": {
             "type": "string"
           }
+        },
+        "envSwitcher.vaultEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep a local versioned vault of your .envs tree (content-addressed snapshots with history). Stored outside the project; disable if you do not want plaintext copies on disk."
+        },
+        "envSwitcher.vaultAutoSnapshot": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the vault is enabled, automatically append a snapshot after .envs changes (same debounce as backup) and after symlink operations."
+        },
+        "envSwitcher.vaultLocation": {
+          "type": "string",
+          "default": "globalStorage",
+          "enum": [
+            "globalStorage",
+            "userHome"
+          ],
+          "enumDescriptions": [
+            "Inside the editor's global storage (user-specific, with the extension).",
+            "Under ~/.env-switcher-vault on this machine (chmod 700 on macOS/Linux when possible)."
+          ],
+          "description": "Where the env vault root directory is created."
+        },
+        "envSwitcher.vaultMaxVersions": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Maximum number of vault snapshots to retain per workspace (oldest deleted after each new snapshot)."
+        },
+        "envSwitcher.vaultSkipUnchanged": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip auto-snapshots when file contents match the latest vault snapshot (same SHA-256 fingerprint)."
         }
       }
     },
@@ -102,6 +181,26 @@
           "command": "envSwitcher.refreshEnvList",
           "when": "view == envSwitcher.envFiles || view == envSwitcher.projectFolders",
           "group": "navigation"
+        },
+        {
+          "command": "envSwitcher.openEnvFolderExternally",
+          "when": "view == envSwitcher.envFiles",
+          "group": "navigation@2"
+        },
+        {
+          "command": "envSwitcher.openVaultFolder",
+          "when": "view == envSwitcher.envFiles",
+          "group": "navigation@3"
+        },
+        {
+          "command": "envSwitcher.restoreFromVault",
+          "when": "view == envSwitcher.envFiles",
+          "group": "navigation@4"
+        },
+        {
+          "command": "envSwitcher.vaultSnapshotNow",
+          "when": "view == envSwitcher.envFiles",
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [
@@ -124,6 +223,21 @@
           "command": "envSwitcher.openEnvFile",
           "when": "view == envSwitcher.envFiles && viewItem == envFile",
           "group": "envSwitcher@1"
+        },
+        {
+          "command": "envSwitcher.revealEnvInExplorer",
+          "when": "view == envSwitcher.envFiles && viewItem == envFile",
+          "group": "envSwitcher@2"
+        },
+        {
+          "command": "envSwitcher.duplicateEnvFile",
+          "when": "view == envSwitcher.envFiles && viewItem == envFile",
+          "group": "envSwitcher@3"
+        },
+        {
+          "command": "envSwitcher.restoreEnvFileFromVault",
+          "when": "view == envSwitcher.envFiles && viewItem == envFile",
+          "group": "envSwitcher@4"
         }
       ]
     },
@@ -135,10 +249,19 @@
     ]
   },
   "scripts": {
-    "package": "node scripts/generate-icon.js && npx @vscode/vsce package --allow-missing-repository"
+    "package": "node scripts/generate-icon.js && npx @vscode/vsce package --allow-missing-repository",
+    "test": "npm run test:unit && npm run test:smoke && npm run test:vscode",
+    "test:unit": "node --test test/unit/**/*.test.js",
+    "test:smoke": "node --test test/smoke/**/*.test.js",
+    "test:vscode": "node test/run-vscode-tests.js",
+    "test:integration": "node test/run-vscode-tests.js --integration-only",
+    "test:e2e": "node test/run-vscode-tests.js --e2e-only"
   },
   "devDependencies": {
+    "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^2.22.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.4.0",
     "sharp": "^0.34.5"
   }
 }
