@@ -25,6 +25,10 @@ describe('Integration: extension host', function () {
       'envSwitcher.openEnvFolderExternally',
       'envSwitcher.backupNow',
       'envSwitcher.restoreBackup',
+      'envSwitcher.vaultSnapshotNow',
+      'envSwitcher.openVaultFolder',
+      'envSwitcher.restoreFromVault',
+      'envSwitcher.restoreEnvFileFromVault',
     ];
     for (const c of required) {
       assert.ok(cmds.includes(c), `Missing command: ${c}`);

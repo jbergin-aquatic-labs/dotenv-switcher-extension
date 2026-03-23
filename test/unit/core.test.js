@@ -5,6 +5,15 @@ const path = require('path');
 const os = require('os');
 const core = require('../../src/lib/core');
 
+describe('core: workspaceScopedDirName', () => {
+  it('is stable for the same workspace path', () => {
+    const a = core.workspaceScopedDirName('/projects/foo');
+    const b = core.workspaceScopedDirName('/projects/foo');
+    assert.strictEqual(a, b);
+    assert.ok(a.includes('-'));
+  });
+});
+
 describe('core: getTargetDirectories', () => {
   it('defaults to a single workspace root entry', () => {
     assert.deepStrictEqual(core.getTargetDirectories(undefined), ['.']);

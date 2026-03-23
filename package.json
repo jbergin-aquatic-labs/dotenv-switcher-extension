@@ -78,6 +78,22 @@
       {
         "command": "envSwitcher.restoreBackup",
         "title": "Env Switcher: Restore .envs from Local Backup"
+      },
+      {
+        "command": "envSwitcher.vaultSnapshotNow",
+        "title": "Env Switcher: Save Vault Snapshot Now"
+      },
+      {
+        "command": "envSwitcher.openVaultFolder",
+        "title": "Env Switcher: Open Vault Folder for This Workspace"
+      },
+      {
+        "command": "envSwitcher.restoreFromVault",
+        "title": "Env Switcher: Restore from Vault…"
+      },
+      {
+        "command": "envSwitcher.restoreEnvFileFromVault",
+        "title": "Restore This File from Vault…"
       }
     ],
     "configuration": {
@@ -121,6 +137,41 @@
           "items": {
             "type": "string"
           }
+        },
+        "envSwitcher.vaultEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep a local versioned vault of your .envs tree (content-addressed snapshots with history). Stored outside the project; disable if you do not want plaintext copies on disk."
+        },
+        "envSwitcher.vaultAutoSnapshot": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the vault is enabled, automatically append a snapshot after .envs changes (same debounce as backup) and after symlink operations."
+        },
+        "envSwitcher.vaultLocation": {
+          "type": "string",
+          "default": "globalStorage",
+          "enum": [
+            "globalStorage",
+            "userHome"
+          ],
+          "enumDescriptions": [
+            "Inside the editor's global storage (user-specific, with the extension).",
+            "Under ~/.env-switcher-vault on this machine (chmod 700 on macOS/Linux when possible)."
+          ],
+          "description": "Where the env vault root directory is created."
+        },
+        "envSwitcher.vaultMaxVersions": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 5000,
+          "description": "Maximum number of vault snapshots to retain per workspace (oldest deleted after each new snapshot)."
+        },
+        "envSwitcher.vaultSkipUnchanged": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip auto-snapshots when file contents match the latest vault snapshot (same SHA-256 fingerprint)."
         }
       }
     },
@@ -135,6 +186,21 @@
           "command": "envSwitcher.openEnvFolderExternally",
           "when": "view == envSwitcher.envFiles",
           "group": "navigation@2"
+        },
+        {
+          "command": "envSwitcher.openVaultFolder",
+          "when": "view == envSwitcher.envFiles",
+          "group": "navigation@3"
+        },
+        {
+          "command": "envSwitcher.restoreFromVault",
+          "when": "view == envSwitcher.envFiles",
+          "group": "navigation@4"
+        },
+        {
+          "command": "envSwitcher.vaultSnapshotNow",
+          "when": "view == envSwitcher.envFiles",
+          "group": "navigation@5"
         }
       ],
       "view/item/context": [
@@ -167,6 +233,11 @@
           "command": "envSwitcher.duplicateEnvFile",
           "when": "view == envSwitcher.envFiles && viewItem == envFile",
           "group": "envSwitcher@3"
+        },
+        {
+          "command": "envSwitcher.restoreEnvFileFromVault",
+          "when": "view == envSwitcher.envFiles && viewItem == envFile",
+          "group": "envSwitcher@4"
         }
       ]
     },

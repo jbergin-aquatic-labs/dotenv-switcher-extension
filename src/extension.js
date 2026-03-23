@@ -1,7 +1,9 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const core = require('./lib/core');
+const vault = require('./lib/vault');
 
 let statusBarItem;
 let envFilesProvider;
@@ -47,6 +49,43 @@ function runBackupIfEnabled(workspaceRoot, config) {
       targetFile: config.get('targetFile', '.env'),
       targetDirectories: config.get('targetDirectories'),
     });
+  }
+}
+
+function vaultRootForConfig(config) {
+  return vault.getVaultRoot({
+    globalStoragePath,
+    location: config.get('vaultLocation', 'globalStorage'),
+    homeDir: os.homedir(),
+  });
+}
+
+function runVaultSnapshotIfEnabled(workspaceRoot, config) {
+  if (!config.get('vaultEnabled', true)) return;
+  if (!config.get('vaultAutoSnapshot', true)) return;
+  snapshotVault(workspaceRoot, config, { respectSkipUnchanged: true });
+}
+
+/**
+ * @param {{ respectSkipUnchanged?: boolean }} opts
+ */
+function snapshotVault(workspaceRoot, config, opts = {}) {
+  if (!config.get('vaultEnabled', true)) return null;
+  const efp = envFolderAbs(workspaceRoot, config);
+  if (!fs.existsSync(efp)) return null;
+  const skipIfUnchanged = opts.respectSkipUnchanged !== false && config.get('vaultSkipUnchanged', true);
+  try {
+    return vault.createSnapshot(workspaceRoot, efp, {
+      vaultRoot: vaultRootForConfig(config),
+      envFolderName: config.get('envFolder', '.envs'),
+      targetFile: config.get('targetFile', '.env'),
+      targetDirectories: config.get('targetDirectories'),
+      maxVersions: config.get('vaultMaxVersions', 100),
+      skipIfUnchanged,
+    });
+  } catch (err) {
+    console.error('Env Switcher vault snapshot failed', err);
+    return null;
   }
 }
 
@@ -314,6 +353,7 @@ function activate(context) {
                 envFilesProvider.refresh();
                 projectFoldersProvider.refresh();
                 refreshStatusBar();
+                runVaultSnapshotIfEnabled(workspaceRootInit, configInit);
                 const msg = choice === 'Restore All'
                   ? `Restored ${result.restoredCount} env files and symlink assignments.`
                   : `Restored ${result.restoredCount} env files.`;
@@ -324,8 +364,11 @@ function activate(context) {
             }
           });
       }
-    } else if (configInit.get('autoBackup', true)) {
-      runBackupIfEnabled(workspaceRootInit, configInit);
+    } else {
+      if (configInit.get('autoBackup', true)) {
+        runBackupIfEnabled(workspaceRootInit, configInit);
+      }
+      runVaultSnapshotIfEnabled(workspaceRootInit, configInit);
     }
   }
 
@@ -396,6 +439,7 @@ function activate(context) {
         core.duplicateEnvFileInFolder(envFolderPath, node.relPath, normalized);
         envFilesProvider.refresh();
         runBackupIfEnabled(wr, cfg);
+        runVaultSnapshotIfEnabled(wr, cfg);
         vscode.window.showInformationMessage(`Env Switcher: Created ${normalized}`);
       } catch (err) {
         vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
@@ -432,6 +476,7 @@ function activate(context) {
         projectFoldersProvider.refresh();
         refreshStatusBar();
         runBackupIfEnabled(workspaceRoot, config);
+        runVaultSnapshotIfEnabled(workspaceRoot, config);
         vscode.window.showInformationMessage(
           `Env Switcher: Assigned ${selected.envRelPath} → ${dirLabel}`
         );
@@ -461,7 +506,10 @@ function activate(context) {
         projectFoldersProvider.refresh();
         refreshStatusBar();
         const wr = getWorkspaceRoot();
-        if (wr) runBackupIfEnabled(wr, config);
+        if (wr) {
+          runBackupIfEnabled(wr, config);
+          runVaultSnapshotIfEnabled(wr, config);
+        }
         vscode.window.showInformationMessage(`Env Switcher: Removed .env from ${dirLabel}`);
       } else {
         vscode.window.showWarningMessage(`No .env symlink found in ${dirLabel}`);
@@ -510,6 +558,7 @@ function activate(context) {
         projectFoldersProvider.refresh();
         refreshStatusBar();
         runBackupIfEnabled(workspaceRoot, config);
+        runVaultSnapshotIfEnabled(workspaceRoot, config);
         vscode.window.showInformationMessage(
           `Env Switcher: Switched ${pickedDir.label} → ${selected.envRelPath}`
         );
@@ -535,7 +584,190 @@ function activate(context) {
         targetFile: cfg.get('targetFile', '.env'),
         targetDirectories: cfg.get('targetDirectories'),
       });
+      runVaultSnapshotIfEnabled(wr, cfg);
       vscode.window.showInformationMessage('Env Switcher: Backup saved to local storage.');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.vaultSnapshotNow', () => {
+      const wr = getWorkspaceRoot();
+      if (!wr) return;
+      const cfg = readConfig();
+      if (!cfg.get('vaultEnabled', true)) {
+        vscode.window.showWarningMessage('Env Switcher vault is disabled in settings.');
+        return;
+      }
+      const efp = envFolderAbs(wr, cfg);
+      if (!fs.existsSync(efp)) {
+        vscode.window.showWarningMessage('Env Switcher: No .envs folder to snapshot.');
+        return;
+      }
+      const result = snapshotVault(wr, cfg, { respectSkipUnchanged: false });
+      if (!result) {
+        vscode.window.showErrorMessage('Env Switcher: Vault snapshot failed.');
+        return;
+      }
+      if (result.skipped && result.reason === 'no-files') {
+        vscode.window.showWarningMessage('Env Switcher: No env files to snapshot.');
+        return;
+      }
+      const msg = result.skipped && result.reason === 'unchanged'
+        ? 'Vault already has this content (identical fingerprint).'
+        : `Vault snapshot saved (${result.fileCount} files). ID: ${result.snapshotId}`;
+      vscode.window.showInformationMessage(`Env Switcher: ${msg}`);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.openVaultFolder', async () => {
+      const wr = getWorkspaceRoot();
+      if (!wr) {
+        vscode.window.showErrorMessage('Env Switcher: No workspace folder open.');
+        return;
+      }
+      const cfg = readConfig();
+      const vr = vaultRootForConfig(cfg);
+      vault.ensureSecureVaultRoot(vr);
+      const dir = vault.workspaceVaultDir(vr, wr);
+      core.mkdirp(dir);
+      const ok = await vscode.env.openExternal(vscode.Uri.file(dir));
+      if (!ok) {
+        vscode.window.showInformationMessage(`Env Switcher vault path: ${dir}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.restoreFromVault', async () => {
+      const wr = getWorkspaceRoot();
+      if (!wr) return;
+      const cfg = readConfig();
+      if (!cfg.get('vaultEnabled', true)) {
+        vscode.window.showWarningMessage('Env Switcher vault is disabled in settings.');
+        return;
+      }
+      const vr = vaultRootForConfig(cfg);
+      const snaps = vault.listSnapshots(vr, wr);
+      if (snaps.length === 0) {
+        vscode.window.showWarningMessage('Env Switcher: No vault snapshots for this workspace.');
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        snaps.map((s) => ({
+          label: s.snapshotId,
+          description: s.createdAt ? new Date(s.createdAt).toLocaleString() : '',
+          detail: `${s.fileCount} file(s)`,
+          snapshotId: s.snapshotId,
+        })),
+        { placeHolder: 'Choose a vault snapshot (newest first)' }
+      );
+      if (!pick) return;
+
+      const action = await vscode.window.showQuickPick(
+        [
+          { label: 'Restore entire .envs folder', value: 'full' },
+          { label: 'Restore a single file…', value: 'one' },
+        ],
+        { placeHolder: 'What should be restored from the vault?' }
+      );
+      if (!action) return;
+
+      const envFolderPath = envFolderAbs(wr, cfg);
+      const targetFile = cfg.get('targetFile', '.env');
+
+      if (action.value === 'full') {
+        const ok = await vscode.window.showWarningMessage(
+          'Replace the whole .envs folder with this vault snapshot? Symlinks for target directories will be reapplied when the snapshot recorded them.',
+          { modal: true },
+          'Replace .envs'
+        );
+        if (ok !== 'Replace .envs') return;
+        try {
+          const { restoredCount, manifest } = vault.restoreFullToEnvFolder(wr, envFolderPath, vr, pick.snapshotId);
+          if (manifest?.assignments) {
+            for (const [relPath, envFileRelPath] of Object.entries(manifest.assignments)) {
+              const folderAbsPath = relPath === '.' ? wr : path.join(wr, relPath);
+              if (!fs.existsSync(folderAbsPath)) continue;
+              try {
+                core.createEnvSymlink(folderAbsPath, envFolderPath, envFileRelPath, targetFile);
+              } catch {
+                // skip
+              }
+            }
+          }
+          envFilesProvider.refresh();
+          projectFoldersProvider.refresh();
+          refreshStatusBar();
+          runBackupIfEnabled(wr, cfg);
+          runVaultSnapshotIfEnabled(wr, cfg);
+          vscode.window.showInformationMessage(`Env Switcher: Restored ${restoredCount} file(s) from vault.`);
+        } catch (err) {
+          vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
+        }
+        return;
+      }
+
+      const man = vault.getSnapshotManifest(vr, wr, pick.snapshotId);
+      if (!man?.files?.length) {
+        vscode.window.showWarningMessage('Env Switcher: Snapshot has no file list.');
+        return;
+      }
+      const filePick = await vscode.window.showQuickPick(
+        man.files.map((f) => ({ label: f, fileRel: f })),
+        { placeHolder: 'Pick a file to copy into .envs (overwrites if it exists)' }
+      );
+      if (!filePick) return;
+      try {
+        vault.restoreFileToEnvFolder(wr, envFolderPath, vr, pick.snapshotId, filePick.fileRel);
+        envFilesProvider.refresh();
+        runBackupIfEnabled(wr, cfg);
+        runVaultSnapshotIfEnabled(wr, cfg);
+        vscode.window.showInformationMessage(`Env Switcher: Restored ${filePick.fileRel} from vault.`);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.restoreEnvFileFromVault', async (node) => {
+      if (!node || node.type !== 'file' || !node.relPath) return;
+      const wr = getWorkspaceRoot();
+      if (!wr) return;
+      const cfg = readConfig();
+      if (!cfg.get('vaultEnabled', true)) {
+        vscode.window.showWarningMessage('Env Switcher vault is disabled in settings.');
+        return;
+      }
+      const vr = vaultRootForConfig(cfg);
+      const snaps = vault.listSnapshots(vr, wr).filter((s) => {
+        const m = vault.getSnapshotManifest(vr, wr, s.snapshotId);
+        return m?.files?.includes(node.relPath);
+      });
+      if (snaps.length === 0) {
+        vscode.window.showWarningMessage(`Env Switcher: No vault snapshot contains "${node.relPath}".`);
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        snaps.map((s) => ({
+          label: s.snapshotId,
+          description: s.createdAt ? new Date(s.createdAt).toLocaleString() : '',
+          snapshotId: s.snapshotId,
+        })),
+        { placeHolder: `Restore "${node.relPath}" from which snapshot?` }
+      );
+      if (!pick) return;
+      const envFolderPath = envFolderAbs(wr, cfg);
+      try {
+        vault.restoreFileToEnvFolder(wr, envFolderPath, vr, pick.snapshotId, node.relPath);
+        envFilesProvider.refresh();
+        runBackupIfEnabled(wr, cfg);
+        runVaultSnapshotIfEnabled(wr, cfg);
+        vscode.window.showInformationMessage(`Env Switcher: Restored ${node.relPath} from vault.`);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
+      }
     })
   );
 
@@ -574,6 +806,7 @@ function activate(context) {
         envFilesProvider.refresh();
         projectFoldersProvider.refresh();
         refreshStatusBar();
+        runVaultSnapshotIfEnabled(wr, cfg);
         const msg = choice === 'Restore All'
           ? `Restored ${result.restoredCount} env files and symlink assignments.`
           : `Restored ${result.restoredCount} env files.`;
@@ -598,7 +831,9 @@ function activate(context) {
         envFilesProvider.refresh();
         projectFoldersProvider.refresh();
         refreshStatusBar();
-        runBackupIfEnabled(workspaceRoot, readConfig());
+        const cfg = readConfig();
+        runBackupIfEnabled(workspaceRoot, cfg);
+        runVaultSnapshotIfEnabled(workspaceRoot, cfg);
       }
     );
 

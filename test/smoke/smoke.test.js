@@ -16,6 +16,8 @@ describe('Smoke: package and entrypoints', () => {
     const props = pkg.contributes?.configuration?.properties || {};
     assert.ok(props['envSwitcher.targetDirectories']);
     assert.ok(props['envSwitcher.backupDebounceMs']);
+    assert.ok(props['envSwitcher.vaultEnabled']);
+    assert.ok(props['envSwitcher.vaultMaxVersions']);
   });
 
   it('requires extension entry without vscode (smoke: no throw on parse)', () => {

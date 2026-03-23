@@ -45,6 +45,7 @@ Configure `envSwitcher.targetDirectories` to `[".", "frontend", "backend"]` so e
 - **Status Bar**: Click the env summary (shows each target directory and its active file when multiple are configured).
 - **Duplicate**: Right-click an env file → **Duplicate Env File**.
 - **Reveal / OS folder**: Right-click an env file → **Reveal in Explorer**; use the view title **Open .envs Folder in System File Manager** to open `.envs` in your file manager.
+- **Local env vault**: Versioned snapshots of the whole `.envs` tree (paths under `.envs` preserved) stored outside the repo. Use **Save Vault Snapshot Now**, **Restore from Vault…**, or right-click a file → **Restore This File from Vault…**. Open your workspace’s vault folder from the Env Files view title.
 
 The currently active environment is shown with a checkmark in the sidebar and displayed in the status bar.
 
@@ -57,6 +58,15 @@ The currently active environment is shown with a checkmark in the sidebar and di
 | `envSwitcher.targetDirectories` | `["."]`   | Directories (relative to workspace root) that receive a symlink. Example: `[".", "frontend", "backend"]` |
 | `envSwitcher.backupDebounceMs`  | `500`     | Delay before refreshing views and auto-backup after `.env` / `.envs` changes (`0` = no debounce) |
 | `envSwitcher.autoBackup`        | `true`    | Mirror `.envs` into VS Code local storage for restore after clone/delete    |
+| `envSwitcher.vaultEnabled`      | `true`    | Enable the local vault (plaintext snapshots; see below)                     |
+| `envSwitcher.vaultAutoSnapshot` | `true`  | Append vault snapshots when `.envs` changes (debounced) and after symlink actions |
+| `envSwitcher.vaultLocation`     | `globalStorage` | `globalStorage` (with the extension) or `userHome` (`~/.env-switcher-vault`, chmod `700` on Unix) |
+| `envSwitcher.vaultMaxVersions`  | `100`     | Keep at most this many snapshots per workspace (oldest removed automatically) |
+| `envSwitcher.vaultSkipUnchanged`| `true`    | For auto-snapshots, skip when content matches the latest snapshot (SHA-256 fingerprint) |
+
+### Local vault and security
+
+The vault stores **plain copies** of env files on disk for recovery and history. It is meant for accidental deletion, not for strong secrecy on a shared machine. Turn off `envSwitcher.vaultEnabled` if you do not want that. Prefer full-disk encryption and a locked user account on laptops. The existing **auto backup** (VS Code global storage) and the vault are separate: backups are a single latest mirror; the vault keeps **ordered snapshots** with manifests (file hashes, symlink assignments).
 
 ## Development
 

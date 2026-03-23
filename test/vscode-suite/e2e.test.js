@@ -1,8 +1,10 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const vscode = require('vscode');
 const core = require('../../src/lib/core');
+const vault = require('../../src/lib/vault');
 
 describe('E2E: symlink and duplicate flows', function () {
   this.timeout(60_000);
@@ -62,6 +64,34 @@ describe('E2E: symlink and duplicate flows', function () {
       assert.ok(map['.'].includes('prod'));
     } finally {
       core.removeEnvSymlink(root, '.env');
+    }
+  });
+
+  it('vault snapshots and restores a file with hierarchical path preserved', () => {
+    const root = workspaceRoot();
+    const envFolder = path.join(root, '.envs');
+    const vaultRoot = path.join(os.tmpdir(), `env-switcher-e2e-vault-${Date.now()}`);
+    try {
+      const created = vault.createSnapshot(root, envFolder, {
+        vaultRoot,
+        envFolderName: '.envs',
+        targetFile: '.env',
+        targetDirectories: ['.'],
+        maxVersions: 25,
+        skipIfUnchanged: false,
+      });
+      assert.strictEqual(created.skipped, false);
+      assert.ok(created.snapshotId);
+
+      const snapFiles = path.join(vaultRoot, core.workspaceScopedDirName(root), 'snapshots', created.snapshotId, 'files');
+      assert.ok(fs.existsSync(path.join(snapFiles, 'dev.env')));
+
+      const original = fs.readFileSync(path.join(envFolder, 'dev.env'), 'utf8');
+      fs.writeFileSync(path.join(envFolder, 'dev.env'), 'CORRUPTED=true');
+      vault.restoreFileToEnvFolder(root, envFolder, vaultRoot, created.snapshotId, 'dev.env');
+      assert.strictEqual(fs.readFileSync(path.join(envFolder, 'dev.env'), 'utf8'), original);
+    } finally {
+      fs.rmSync(vaultRoot, { recursive: true, force: true });
     }
   });
 });

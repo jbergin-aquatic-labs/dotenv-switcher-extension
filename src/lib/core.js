@@ -121,10 +121,14 @@ function removeEnvSymlink(folderAbsPath, targetFile) {
   return false;
 }
 
-function workspaceBackupDir(globalStoragePath, workspaceRoot) {
+function workspaceScopedDirName(workspaceRoot) {
   const hash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 12);
   const safeName = path.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]/g, '_');
-  return path.join(globalStoragePath, 'backups', `${safeName}-${hash}`);
+  return `${safeName}-${hash}`;
+}
+
+function workspaceBackupDir(globalStoragePath, workspaceRoot) {
+  return path.join(globalStoragePath, 'backups', workspaceScopedDirName(workspaceRoot));
 }
 
 function mkdirp(dir) {
@@ -345,6 +349,7 @@ module.exports = {
   getAssignedEnv,
   createEnvSymlink,
   removeEnvSymlink,
+  workspaceScopedDirName,
   workspaceBackupDir,
   mkdirp,
   copyDirRecursive,
