@@ -70,7 +70,7 @@ The vault stores **plain copies** of env files on disk for recovery and history.
 
 ## Development
 
-Run `npm test` to execute unit tests, smoke checks, and VS Code extension tests (integration plus end-to-end flows against a fixture workspace). Use `npm run test:integration` or `npm run test:e2e` to run a single VS Code suite.
+Run `npm test` to execute **unit** tests, **regression** checks (`test/regression/`: `package.json` command/view/config contract and stable `core` / `vault` exports), **smoke** checks, and **VS Code** tests (integration asserts every contributed command is registered in the host; e2e exercises symlinks and vault on a fixture workspace). Use `npm run test:integration` or `npm run test:e2e` to run a single VS Code suite.
 
 ## Installation (from .vsix)
 

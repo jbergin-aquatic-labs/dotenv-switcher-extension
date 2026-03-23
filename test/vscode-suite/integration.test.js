@@ -12,31 +12,19 @@ describe('Integration: extension host', function () {
     await ext.activate();
   });
 
-  it('registers env switcher commands', async () => {
+  it('registers every command declared in package.json (non-breaking surface)', async () => {
+    const pkgPath = path.join(__dirname, '..', '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const contributed = (pkg.contributes?.commands || []).map((c) => c.command);
+    assert.ok(contributed.length > 0, 'package.json should declare commands');
+
     const cmds = await vscode.commands.getCommands(true);
-    const required = [
-      'envSwitcher.switchEnv',
-      'envSwitcher.refreshEnvList',
-      'envSwitcher.assignEnv',
-      'envSwitcher.unassignEnv',
-      'envSwitcher.openEnvFile',
-      'envSwitcher.revealEnvInExplorer',
-      'envSwitcher.duplicateEnvFile',
-      'envSwitcher.openEnvFolderExternally',
-      'envSwitcher.backupNow',
-      'envSwitcher.restoreBackup',
-      'envSwitcher.vaultSnapshotNow',
-      'envSwitcher.openVaultFolder',
-      'envSwitcher.restoreFromVault',
-      'envSwitcher.restoreEnvFileFromVault',
-      'envSwitcher.assignEnvWizard',
-      'envSwitcher.unassignEnvWizard',
-      'envSwitcher.openEnvSwitcherSettings',
-      'envSwitcher.vaultSnapshotMenu',
-    ];
-    for (const c of required) {
-      assert.ok(cmds.includes(c), `Missing command: ${c}`);
-    }
+    const missing = contributed.filter((id) => !cmds.includes(id));
+    assert.strictEqual(
+      missing.length,
+      0,
+      `Extension host missing registered commands (breaking change?): ${missing.join(', ')}`
+    );
   });
 
   it('loads workspace fixture with a .envs directory', () => {

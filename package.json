@@ -294,7 +294,7 @@
   "scripts": {
     "package": "node scripts/generate-icon.js && npx @vscode/vsce package --allow-missing-repository",
     "test": "npm run test:unit && npm run test:smoke && npm run test:vscode",
-    "test:unit": "node --test test/unit/**/*.test.js",
+    "test:unit": "node --test test/unit/**/*.test.js test/regression/**/*.test.js",
     "test:smoke": "node --test test/smoke/**/*.test.js",
     "test:vscode": "node test/run-vscode-tests.js",
     "test:integration": "node test/run-vscode-tests.js --integration-only",
