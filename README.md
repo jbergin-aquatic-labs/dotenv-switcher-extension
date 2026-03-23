@@ -36,23 +36,31 @@ your-project/
 └── ...
 ```
 
-Configure `envSwitcher.targetDirectories` to `[".", "frontend", "backend"]` to enable switching each directory independently.
+Configure `envSwitcher.targetDirectories` to `[".", "frontend", "backend"]` so each listed folder gets its own `.env` symlink. The sidebar **Target directories** view lists exactly those paths (missing paths are shown so you can fix typos).
 
 ## Usage
 
-- **Activity Bar**: Open the Env Switcher view and click an environment under each directory
-- **Command Palette**: `Env Switcher: Select Environment` (selects target directory first if multiple)
-- **Status Bar**: Click the `env: <name>` item in the bottom status bar
+- **Activity Bar**: Open the Env Switcher view; use **Env Files** to browse `.envs`, and **Target directories** to assign a file per configured folder (right-click → Assign).
+- **Command Palette**: `Env Switcher: Select Environment` (picks a target directory when several are configured, then the env file).
+- **Status Bar**: Click the env summary (shows each target directory and its active file when multiple are configured).
+- **Duplicate**: Right-click an env file → **Duplicate Env File**.
+- **Reveal / OS folder**: Right-click an env file → **Reveal in Explorer**; use the view title **Open .envs Folder in System File Manager** to open `.envs` in your file manager.
 
 The currently active environment is shown with a checkmark in the sidebar and displayed in the status bar.
 
 ## Settings
 
-| Setting                       | Default  | Description                                                                 |
-| ----------------------------- | -------- | --------------------------------------------------------------------------- |
-| `envSwitcher.envFolder`       | `.envs`  | Folder containing your env files (at workspace root)                        |
-| `envSwitcher.targetFile`      | `.env`   | Target filename for the symlink in each directory                           |
-| `envSwitcher.targetDirectories` | `["."]` | Directories where symlinks are created. Use `"."` for root. Example: `[".", "frontend", "backend"]` |
+| Setting                         | Default   | Description                                                                 |
+| ------------------------------- | --------- | --------------------------------------------------------------------------- |
+| `envSwitcher.envFolder`         | `.envs`   | Folder containing your env files (at workspace root)                        |
+| `envSwitcher.targetFile`        | `.env`    | Target filename for the symlink in each directory                           |
+| `envSwitcher.targetDirectories` | `["."]`   | Directories (relative to workspace root) that receive a symlink. Example: `[".", "frontend", "backend"]` |
+| `envSwitcher.backupDebounceMs`  | `500`     | Delay before refreshing views and auto-backup after `.env` / `.envs` changes (`0` = no debounce) |
+| `envSwitcher.autoBackup`        | `true`    | Mirror `.envs` into VS Code local storage for restore after clone/delete    |
+
+## Development
+
+Run `npm test` to execute unit tests, smoke checks, and VS Code extension tests (integration plus end-to-end flows against a fixture workspace). Use `npm run test:integration` or `npm run test:e2e` to run a single VS Code suite.
 
 ## Installation (from .vsix)
 

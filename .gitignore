@@ -1,3 +1,7 @@
 node_modules/
 .coverage*
 .env*
+# `.env*` also matches `.envs` directory names; allow tracked fixtures for tests.
+!test/fixtures/**/.envs/
+!test/fixtures/**/.envs/**
+.vscode-test/

@@ -1,17 +1,12 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const core = require('./lib/core');
 
 let statusBarItem;
 let envFilesProvider;
 let projectFoldersProvider;
 let globalStoragePath;
-
-const DEFAULT_EXCLUDED = new Set([
-  'node_modules', '.git', '.vscode', 'dist', 'build',
-  '.next', 'coverage', '__pycache__', '.cache',
-]);
 
 function getWorkspaceRoot() {
   const folders = vscode.workspace.workspaceFolders;
@@ -19,86 +14,43 @@ function getWorkspaceRoot() {
   return folders[0].uri.fsPath;
 }
 
-function getEnvFolderPath(workspaceRoot, config) {
-  const name = config.get('envFolder', '.envs');
-  return path.join(workspaceRoot, name);
+function readConfig() {
+  return vscode.workspace.getConfiguration('envSwitcher');
 }
 
-function getExcludedFolders(config) {
-  const configured = config.get('excludedFolders');
-  if (Array.isArray(configured)) return new Set(configured);
-  return DEFAULT_EXCLUDED;
+function envFolderAbs(workspaceRoot, config) {
+  return core.getEnvFolderPath(workspaceRoot, config.get('envFolder', '.envs'));
 }
 
-/**
- * List direct children (files and dirs) of a directory inside .envs.
- * Returns { files: string[], dirs: string[] } with just the names.
- */
-function listEnvDirContents(dirAbsPath) {
-  if (!fs.existsSync(dirAbsPath)) return { files: [], dirs: [] };
-  try {
-    const entries = fs.readdirSync(dirAbsPath, { withFileTypes: true });
-    const files = [];
-    const dirs = [];
-    for (const ent of entries) {
-      if (ent.isFile()) files.push(ent.name);
-      else if (ent.isDirectory()) dirs.push(ent.name);
+function buildEnvQuickPickItems(envFolderPath, currentlyAssigned) {
+  const descriptors = core.buildEnvQuickPickDescriptors(envFolderPath, currentlyAssigned);
+  return descriptors.map((d) => {
+    if (d.kind === 'separator') {
+      return { label: d.label, kind: vscode.QuickPickItemKind.Separator };
     }
-    files.sort();
-    dirs.sort();
-    return { files, dirs };
-  } catch {
-    return { files: [], dirs: [] };
+    return {
+      label: d.label,
+      description: d.description,
+      detail: d.detail,
+      envRelPath: d.envRelPath,
+    };
+  });
+}
+
+function runBackupIfEnabled(workspaceRoot, config) {
+  if (!config.get('autoBackup', true)) return;
+  const efp = envFolderAbs(workspaceRoot, config);
+  if (fs.existsSync(efp)) {
+    core.backupEnvs(workspaceRoot, efp, {
+      globalStoragePath,
+      envFolderName: config.get('envFolder', '.envs'),
+      targetFile: config.get('targetFile', '.env'),
+      targetDirectories: config.get('targetDirectories'),
+    });
   }
 }
 
-/**
- * Recursively collect all env files under envFolderPath.
- * Returns relative paths like ["backend/.env.prod", "frontend/.env.test"].
- */
-function listAllEnvFiles(envFolderPath) {
-  const results = [];
-  function walk(dir, prefix) {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const ent of entries) {
-        const rel = prefix ? `${prefix}/${ent.name}` : ent.name;
-        if (ent.isFile()) results.push(rel);
-        else if (ent.isDirectory()) walk(path.join(dir, ent.name), rel);
-      }
-    } catch {
-      // skip unreadable dirs
-    }
-  }
-  if (fs.existsSync(envFolderPath)) walk(envFolderPath, '');
-  results.sort();
-  return results;
-}
-
-/**
- * Check what env file is symlinked as .env in a given folder.
- * Returns the relative path within .envs (e.g. "backend/.env.prod"), or null.
- */
-function getAssignedEnv(folderAbsPath, envFolderPath, config) {
-  const targetFile = config.get('targetFile', '.env');
-  const targetPath = path.join(folderAbsPath, targetFile);
-  try {
-    const stats = fs.lstatSync(targetPath);
-    if (stats.isSymbolicLink()) {
-      const linkTarget = fs.readlinkSync(targetPath);
-      const resolved = path.resolve(path.dirname(targetPath), linkTarget);
-      const envFolderResolved = path.resolve(envFolderPath);
-      if (resolved.startsWith(envFolderResolved + path.sep) || resolved === envFolderResolved) {
-        return path.relative(envFolderResolved, resolved);
-      }
-    }
-  } catch {
-    // no symlink
-  }
-  return null;
-}
-
-// ─── Env Files Tree (top section) ────────────────────────────────
+// ─── Env Files Tree ────────────────────────────────────────────────
 
 class EnvFilesTreeDataProvider {
   constructor() {
@@ -135,14 +87,14 @@ class EnvFilesTreeDataProvider {
   getChildren(element) {
     const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot) return [];
-    const config = vscode.workspace.getConfiguration('envSwitcher');
-    const envFolderPath = getEnvFolderPath(workspaceRoot, config);
+    const config = readConfig();
+    const envFolderPath = envFolderAbs(workspaceRoot, config);
     if (!fs.existsSync(envFolderPath)) return [];
 
     const dirAbsPath = element ? element.absPath : envFolderPath;
     const parentRel = element ? element.relPath : '';
 
-    const { files, dirs } = listEnvDirContents(dirAbsPath);
+    const { files, dirs } = core.listEnvDirContents(dirAbsPath);
     const children = [];
 
     for (const d of dirs) {
@@ -169,7 +121,7 @@ class EnvFilesTreeDataProvider {
   }
 }
 
-// ─── Project Folders Tree (bottom section) ───────────────────────
+// ─── Project Folders Tree (per targetDirectories) ─────────────────
 
 class ProjectFoldersTreeDataProvider {
   constructor() {
@@ -182,19 +134,14 @@ class ProjectFoldersTreeDataProvider {
   }
 
   getTreeItem(element) {
-    const hasChildren = this._hasSubdirectories(element.absPath, element.excluded);
-    const collapsible = hasChildren
-      ? vscode.TreeItemCollapsibleState.Collapsed
-      : vscode.TreeItemCollapsibleState.None;
-
-    const isRoot = element.isRoot;
-    const label = isRoot ? 'Workspace root' : element.name;
-
-    const item = new vscode.TreeItem(label, collapsible);
+    const item = new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.None);
     item.iconPath = new vscode.ThemeIcon('folder');
     item.resourceUri = vscode.Uri.file(element.absPath);
 
-    if (element.assignedEnv) {
+    if (!element.exists) {
+      item.description = 'missing path';
+      item.contextValue = 'projectFolderMissing';
+    } else if (element.assignedEnv) {
       item.description = `← ${element.assignedEnv}`;
       item.contextValue = 'projectFolderAssigned';
       item.iconPath = new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.green'));
@@ -202,9 +149,9 @@ class ProjectFoldersTreeDataProvider {
       item.contextValue = 'projectFolder';
     }
 
-    item.tooltip = isRoot
-      ? element.absPath
-      : `${element.relPath}${element.assignedEnv ? ` (→ ${element.assignedEnv})` : ''}`;
+    item.tooltip = element.exists
+      ? `${element.absPath}${element.assignedEnv ? ` (→ ${element.assignedEnv})` : ''}`
+      : `Path does not exist: ${element.absPath}`;
 
     return item;
   }
@@ -213,263 +160,35 @@ class ProjectFoldersTreeDataProvider {
     const workspaceRoot = getWorkspaceRoot();
     if (!workspaceRoot) return [];
 
-    const config = vscode.workspace.getConfiguration('envSwitcher');
-    const envFolderPath = getEnvFolderPath(workspaceRoot, config);
-    const envFolderName = config.get('envFolder', '.envs');
-    const excluded = getExcludedFolders(config);
+    const config = readConfig();
+    const envFolderPath = envFolderAbs(workspaceRoot, config);
+    const targetFile = config.get('targetFile', '.env');
+    const targetDirs = core.getTargetDirectories(config.get('targetDirectories'));
 
     if (!element) {
-      const assignedEnv = getAssignedEnv(workspaceRoot, envFolderPath, config);
-      return [
-        {
-          name: path.basename(workspaceRoot),
-          absPath: workspaceRoot,
-          relPath: '.',
-          isRoot: true,
+      return targetDirs.map((rel) => {
+        const absPath = core.resolveTargetFolderAbs(workspaceRoot, rel);
+        const exists = fs.existsSync(absPath);
+        const assignedEnv = exists ? core.getAssignedEnv(absPath, envFolderPath, targetFile) : null;
+        const name = rel === '.'
+          ? `Workspace root (${path.basename(workspaceRoot)})`
+          : rel;
+        return {
+          name,
+          absPath,
+          relPath: rel === '.' ? '.' : rel,
+          isRoot: rel === '.',
           assignedEnv,
-          excluded,
-          envFolderName,
-        },
-      ];
+          exists,
+        };
+      });
     }
 
-    return this._getSubdirectories(element.absPath, workspaceRoot, excluded, envFolderName, envFolderPath, config);
-  }
-
-  _getSubdirectories(parentAbsPath, workspaceRoot, excluded, envFolderName, envFolderPath, config) {
-    try {
-      const entries = fs.readdirSync(parentAbsPath, { withFileTypes: true });
-      return entries
-        .filter((ent) => {
-          if (!ent.isDirectory()) return false;
-          if (excluded.has(ent.name)) return false;
-          if (ent.name === envFolderName) return false;
-          if (ent.name.startsWith('.')) return false;
-          return true;
-        })
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((ent) => {
-          const absPath = path.join(parentAbsPath, ent.name);
-          const relPath = path.relative(workspaceRoot, absPath);
-          const assignedEnv = getAssignedEnv(absPath, envFolderPath, config);
-          return {
-            name: ent.name,
-            absPath,
-            relPath,
-            isRoot: false,
-            assignedEnv,
-            excluded,
-            envFolderName,
-          };
-        });
-    } catch {
-      return [];
-    }
-  }
-
-  _hasSubdirectories(parentAbsPath, excluded) {
-    try {
-      const entries = fs.readdirSync(parentAbsPath, { withFileTypes: true });
-      return entries.some(
-        (ent) => ent.isDirectory() && !excluded.has(ent.name) && !ent.name.startsWith('.')
-      );
-    } catch {
-      return false;
-    }
+    return [];
   }
 }
 
-// ─── Symlink operations ──────────────────────────────────────────
-
-/**
- * envFileRelPath is relative to envFolderPath, e.g. "backend/.env.prod"
- */
-async function createEnvSymlink(folderAbsPath, envFolderPath, envFileRelPath, config) {
-  const targetFile = config.get('targetFile', '.env');
-  const targetPath = path.join(folderAbsPath, targetFile);
-  const sourcePath = path.join(envFolderPath, envFileRelPath);
-
-  if (!fs.existsSync(sourcePath)) {
-    throw new Error(`Env file "${envFileRelPath}" not found in .envs folder`);
-  }
-
-  try {
-    const stats = fs.lstatSync(targetPath);
-    if (stats.isSymbolicLink() || stats.isFile()) {
-      fs.unlinkSync(targetPath);
-    }
-  } catch {
-    // doesn't exist yet
-  }
-
-  const relativeSource = path.relative(folderAbsPath, sourcePath);
-  fs.symlinkSync(relativeSource, targetPath);
-}
-
-function removeEnvSymlink(folderAbsPath, config) {
-  const targetFile = config.get('targetFile', '.env');
-  const targetPath = path.join(folderAbsPath, targetFile);
-  try {
-    const stats = fs.lstatSync(targetPath);
-    if (stats.isSymbolicLink()) {
-      fs.unlinkSync(targetPath);
-      return true;
-    }
-  } catch {
-    // nothing to remove
-  }
-  return false;
-}
-
-// ─── Backup & Restore ────────────────────────────────────────────
-
-function workspaceBackupDir(workspaceRoot) {
-  const hash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 12);
-  const safeName = path.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]/g, '_');
-  return path.join(globalStoragePath, 'backups', `${safeName}-${hash}`);
-}
-
-function mkdirp(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-}
-
-/**
- * Recursively copy the contents of srcDir into destDir, preserving structure.
- * Returns the number of files copied.
- */
-function copyDirRecursive(srcDir, destDir) {
-  let count = 0;
-  mkdirp(destDir);
-  try {
-    const entries = fs.readdirSync(srcDir, { withFileTypes: true });
-    for (const ent of entries) {
-      const srcPath = path.join(srcDir, ent.name);
-      const destPath = path.join(destDir, ent.name);
-      if (ent.isFile()) {
-        try { fs.copyFileSync(srcPath, destPath); count++; } catch { /* skip */ }
-      } else if (ent.isDirectory()) {
-        count += copyDirRecursive(srcPath, destPath);
-      }
-    }
-  } catch {
-    // skip unreadable
-  }
-  return count;
-}
-
-/**
- * Recursively remove a directory and all its contents.
- */
-function rmrfSync(dir) {
-  try {
-    fs.rmSync(dir, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * Snapshot the .envs folder and current symlink assignments into the backup dir.
- * Preserves the full directory structure inside .envs.
- */
-function backupEnvs(workspaceRoot, envFolderPath, config) {
-  const allFiles = listAllEnvFiles(envFolderPath);
-  if (allFiles.length === 0) return;
-
-  const backupDir = workspaceBackupDir(workspaceRoot);
-  const filesDir = path.join(backupDir, 'files');
-
-  // Wipe previous backup files dir to remove stale entries, then recopy
-  rmrfSync(filesDir);
-  copyDirRecursive(envFolderPath, filesDir);
-
-  const assignments = collectAssignments(workspaceRoot, envFolderPath, config);
-
-  const manifest = {
-    workspacePath: workspaceRoot,
-    envFolder: config.get('envFolder', '.envs'),
-    targetFile: config.get('targetFile', '.env'),
-    backedUpAt: new Date().toISOString(),
-    files: allFiles,
-    assignments,
-  };
-
-  fs.writeFileSync(path.join(backupDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
-}
-
-/**
- * Walk the project tree and record every folder that has a symlink pointing
- * into the .envs folder. Returns { "relative/path": "envFileRelPath", ... }.
- */
-function collectAssignments(workspaceRoot, envFolderPath, config) {
-  const excluded = getExcludedFolders(config);
-  const envFolderName = config.get('envFolder', '.envs');
-  const result = {};
-
-  function walk(dir) {
-    const relPath = path.relative(workspaceRoot, dir) || '.';
-    const assigned = getAssignedEnv(dir, envFolderPath, config);
-    if (assigned) {
-      result[relPath] = assigned;
-    }
-
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const ent of entries) {
-        if (!ent.isDirectory()) continue;
-        if (excluded.has(ent.name) || ent.name === envFolderName || ent.name.startsWith('.')) continue;
-        walk(path.join(dir, ent.name));
-      }
-    } catch {
-      // skip unreadable dirs
-    }
-  }
-
-  walk(workspaceRoot);
-  return result;
-}
-
-function getBackupManifest(workspaceRoot) {
-  const backupDir = workspaceBackupDir(workspaceRoot);
-  const manifestPath = path.join(backupDir, 'manifest.json');
-  try {
-    return JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Restore .envs files (with full directory structure) and optionally symlink assignments.
- */
-async function restoreFromBackup(workspaceRoot, config, restoreAssignments) {
-  const backupDir = workspaceBackupDir(workspaceRoot);
-  const manifest = getBackupManifest(workspaceRoot);
-  if (!manifest) throw new Error('No backup found for this workspace');
-
-  const envFolderName = config.get('envFolder', '.envs');
-  const envFolderPath = path.join(workspaceRoot, envFolderName);
-  const filesDir = path.join(backupDir, 'files');
-
-  mkdirp(envFolderPath);
-  const restoredCount = copyDirRecursive(filesDir, envFolderPath);
-
-  if (restoreAssignments && manifest.assignments) {
-    for (const [relPath, envFileRelPath] of Object.entries(manifest.assignments)) {
-      const folderAbsPath = relPath === '.' ? workspaceRoot : path.join(workspaceRoot, relPath);
-      if (!fs.existsSync(folderAbsPath)) continue;
-      try {
-        await createEnvSymlink(folderAbsPath, envFolderPath, envFileRelPath, config);
-      } catch {
-        // skip missing dirs/files
-      }
-    }
-  }
-
-  return { restoredCount, assignments: manifest.assignments };
-}
-
-// ─── Status bar ──────────────────────────────────────────────────
+// ─── Status bar ────────────────────────────────────────────────────
 
 function refreshStatusBar() {
   const workspaceRoot = getWorkspaceRoot();
@@ -478,70 +197,82 @@ function refreshStatusBar() {
     return;
   }
 
-  const config = vscode.workspace.getConfiguration('envSwitcher');
-  const envFolderPath = getEnvFolderPath(workspaceRoot, config);
+  const config = readConfig();
+  const envFolderPath = envFolderAbs(workspaceRoot, config);
 
   if (!fs.existsSync(envFolderPath)) {
     statusBarItem.hide();
     return;
   }
 
-  const rootActive = getAssignedEnv(workspaceRoot, envFolderPath, config);
-  if (rootActive) {
-    statusBarItem.text = `$(gear) env: ${rootActive}`;
+  const targetFile = config.get('targetFile', '.env');
+  const targetDirs = core.getTargetDirectories(config.get('targetDirectories'));
+  const parts = [];
+
+  for (const rel of targetDirs) {
+    const folderAbs = core.resolveTargetFolderAbs(workspaceRoot, rel);
+    if (!fs.existsSync(folderAbs)) continue;
+    const active = core.getAssignedEnv(folderAbs, envFolderPath, targetFile);
+    const label = rel === '.' ? 'root' : rel;
+    parts.push(active ? `${label}: ${active}` : `${label}: —`);
+  }
+
+  if (parts.length === 0) {
+    statusBarItem.text = '$(gear) env: —';
   } else {
-    statusBarItem.text = '$(gear) env: none';
+    statusBarItem.text = `$(gear) ${parts.join(' · ')}`;
   }
   statusBarItem.show();
 }
 
-// ─── Quick-pick helpers ──────────────────────────────────────────
+async function pickTargetDirectory(workspaceRoot, config) {
+  const targetDirs = core.getTargetDirectories(config.get('targetDirectories'));
+  const choices = targetDirs.map((rel) => {
+    const abs = core.resolveTargetFolderAbs(workspaceRoot, rel);
+    return {
+      label: rel === '.' ? 'Workspace root (.)' : rel,
+      description: fs.existsSync(abs) ? undefined : 'Path does not exist',
+      rel,
+      absPath: abs,
+    };
+  });
 
-/**
- * Build quick-pick items from the .envs hierarchy, with directory separators.
- */
-function buildEnvQuickPickItems(envFolderPath, currentlyAssigned) {
-  const allFiles = listAllEnvFiles(envFolderPath);
-  if (allFiles.length === 0) return [];
-
-  const byDir = new Map();
-  for (const rel of allFiles) {
-    const dir = path.dirname(rel);
-    const key = dir === '.' ? '' : dir;
-    if (!byDir.has(key)) byDir.set(key, []);
-    byDir.get(key).push(rel);
+  if (choices.length === 0) {
+    vscode.window.showErrorMessage('Env Switcher: No target directories configured.');
+    return null;
   }
 
-  const items = [];
-  const sortedDirs = [...byDir.keys()].sort();
-  for (const dir of sortedDirs) {
-    if (dir && items.length > 0) {
-      items.push({ label: dir, kind: vscode.QuickPickItemKind.Separator });
+  if (choices.length === 1) {
+    const c = choices[0];
+    if (!fs.existsSync(c.absPath)) {
+      vscode.window.showErrorMessage(`Env Switcher: Target directory does not exist: ${c.rel}`);
+      return null;
     }
-
-    for (const rel of byDir.get(dir)) {
-      const fileName = path.basename(rel);
-      const isCurrent = rel === currentlyAssigned;
-      items.push({
-        label: isCurrent ? `$(check) ${fileName}` : fileName,
-        description: dir ? dir : (isCurrent ? 'currently assigned' : ''),
-        detail: isCurrent && dir ? 'currently assigned' : undefined,
-        envRelPath: rel,
-      });
-    }
+    return { rel: c.rel, absPath: c.absPath, label: c.rel === '.' ? 'workspace root' : c.rel };
   }
 
-  return items;
+  const picked = await vscode.window.showQuickPick(choices, {
+    placeHolder: 'Select target directory for .env symlink',
+  });
+
+  if (!picked) return null;
+  if (!fs.existsSync(picked.absPath)) {
+    vscode.window.showErrorMessage(`Env Switcher: Target directory does not exist: ${picked.rel}`);
+    return null;
+  }
+  return {
+    rel: picked.rel,
+    absPath: picked.absPath,
+    label: picked.rel === '.' ? 'workspace root' : picked.rel,
+  };
 }
-
-// ─── Activation ──────────────────────────────────────────────────
 
 function activate(context) {
   globalStoragePath = context.globalStorageUri.fsPath;
 
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarItem.command = 'envSwitcher.switchEnv';
-  statusBarItem.tooltip = 'Click to switch .env file';
+  statusBarItem.tooltip = 'Click to switch .env symlink for a target directory';
   context.subscriptions.push(statusBarItem);
 
   envFilesProvider = new EnvFilesTreeDataProvider();
@@ -552,14 +283,13 @@ function activate(context) {
     vscode.window.registerTreeDataProvider('envSwitcher.projectFolders', projectFoldersProvider),
   );
 
-  // On activation: check if .envs is missing but a backup exists
+  const configInit = readConfig();
   const workspaceRootInit = getWorkspaceRoot();
   if (workspaceRootInit) {
-    const configInit = vscode.workspace.getConfiguration('envSwitcher');
-    const envFolderPathInit = getEnvFolderPath(workspaceRootInit, configInit);
+    const envFolderPathInit = envFolderAbs(workspaceRootInit, configInit);
 
     if (!fs.existsSync(envFolderPathInit)) {
-      const manifest = getBackupManifest(workspaceRootInit);
+      const manifest = core.getBackupManifest(globalStoragePath, workspaceRootInit);
       if (manifest && manifest.files && manifest.files.length > 0) {
         const age = manifest.backedUpAt
           ? `backed up ${new Date(manifest.backedUpAt).toLocaleDateString()}`
@@ -574,9 +304,11 @@ function activate(context) {
           .then(async (choice) => {
             if (choice === 'Restore All' || choice === 'Restore Files Only') {
               try {
-                const result = await restoreFromBackup(
+                const result = await core.restoreFromBackup(
                   workspaceRootInit,
-                  configInit,
+                  configInit.get('envFolder', '.envs'),
+                  configInit.get('targetFile', '.env'),
+                  globalStoragePath,
                   choice === 'Restore All'
                 );
                 envFilesProvider.refresh();
@@ -593,11 +325,10 @@ function activate(context) {
           });
       }
     } else if (configInit.get('autoBackup', true)) {
-      backupEnvs(workspaceRootInit, envFolderPathInit, configInit);
+      runBackupIfEnabled(workspaceRootInit, configInit);
     }
   }
 
-  // Refresh both trees
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.refreshEnvList', () => {
       envFilesProvider.refresh();
@@ -606,7 +337,6 @@ function activate(context) {
     })
   );
 
-  // Open an env file in the editor
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.openEnvFile', async (absPathOrNode) => {
       const filePath = typeof absPathOrNode === 'string' ? absPathOrNode : absPathOrNode?.absPath;
@@ -616,16 +346,73 @@ function activate(context) {
     })
   );
 
-  // Right-click → Assign .env File
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.revealEnvInExplorer', async (node) => {
+      const filePath = typeof node === 'string' ? node : node?.absPath;
+      if (!filePath) return;
+      const uri = vscode.Uri.file(filePath);
+      await vscode.commands.executeCommand('revealInExplorer', uri);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.openEnvFolderExternally', async () => {
+      const wr = getWorkspaceRoot();
+      if (!wr) {
+        vscode.window.showErrorMessage('Env Switcher: No workspace folder open.');
+        return;
+      }
+      const cfg = readConfig();
+      const efp = envFolderAbs(wr, cfg);
+      if (!fs.existsSync(efp)) {
+        vscode.window.showWarningMessage('Env Switcher: No .envs folder found.');
+        return;
+      }
+      const uri = vscode.Uri.file(efp);
+      const ok = await vscode.env.openExternal(uri);
+      if (!ok) {
+        vscode.window.showInformationMessage('Env Switcher: Could not open folder (unsupported on this platform).');
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.duplicateEnvFile', async (node) => {
+      if (!node || node.type !== 'file' || !node.relPath) return;
+      const wr = getWorkspaceRoot();
+      if (!wr) return;
+      const cfg = readConfig();
+      const envFolderPath = envFolderAbs(wr, cfg);
+      const suggested = `${path.basename(node.relPath, path.extname(node.relPath))}.copy${path.extname(node.relPath) || ''}`;
+      const destName = await vscode.window.showInputBox({
+        title: 'Duplicate env file',
+        prompt: 'New file path relative to .envs (e.g. staging/.env.local)',
+        value: suggested,
+        validateInput: (v) => (v && v.trim() ? null : 'Enter a relative path'),
+      });
+      if (!destName) return;
+      const normalized = destName.replace(/\\/g, '/').replace(/^\/+/, '');
+      try {
+        core.duplicateEnvFileInFolder(envFolderPath, node.relPath, normalized);
+        envFilesProvider.refresh();
+        runBackupIfEnabled(wr, cfg);
+        vscode.window.showInformationMessage(`Env Switcher: Created ${normalized}`);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
+      }
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.assignEnv', async (node) => {
-      if (!node) return;
+      if (!node || !node.exists) return;
       const workspaceRoot = getWorkspaceRoot();
       if (!workspaceRoot) return;
 
-      const config = vscode.workspace.getConfiguration('envSwitcher');
-      const envFolderPath = getEnvFolderPath(workspaceRoot, config);
-      const currentlyAssigned = getAssignedEnv(node.absPath, envFolderPath, config);
+      const config = readConfig();
+      const envFolderPath = envFolderAbs(workspaceRoot, config);
+      const targetFile = config.get('targetFile', '.env');
+      const currentlyAssigned = core.getAssignedEnv(node.absPath, envFolderPath, targetFile);
       const items = buildEnvQuickPickItems(envFolderPath, currentlyAssigned);
 
       if (items.length === 0) {
@@ -641,12 +428,10 @@ function activate(context) {
       if (!selected || !selected.envRelPath) return;
 
       try {
-        await createEnvSymlink(node.absPath, envFolderPath, selected.envRelPath, config);
+        core.createEnvSymlink(node.absPath, envFolderPath, selected.envRelPath, targetFile);
         projectFoldersProvider.refresh();
         refreshStatusBar();
-        if (config.get('autoBackup', true)) {
-          backupEnvs(workspaceRoot, envFolderPath, config);
-        }
+        runBackupIfEnabled(workspaceRoot, config);
         vscode.window.showInformationMessage(
           `Env Switcher: Assigned ${selected.envRelPath} → ${dirLabel}`
         );
@@ -656,12 +441,12 @@ function activate(context) {
     })
   );
 
-  // Right-click → Remove .env Assignment
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.unassignEnv', async (node) => {
-      if (!node) return;
+      if (!node || !node.exists) return;
 
-      const config = vscode.workspace.getConfiguration('envSwitcher');
+      const config = readConfig();
+      const targetFile = config.get('targetFile', '.env');
       const dirLabel = node.isRoot ? 'workspace root' : node.relPath;
 
       const confirm = await vscode.window.showWarningMessage(
@@ -672,13 +457,11 @@ function activate(context) {
 
       if (confirm !== 'Remove') return;
 
-      if (removeEnvSymlink(node.absPath, config)) {
+      if (core.removeEnvSymlink(node.absPath, targetFile)) {
         projectFoldersProvider.refresh();
         refreshStatusBar();
         const wr = getWorkspaceRoot();
-        if (wr && config.get('autoBackup', true)) {
-          backupEnvs(wr, getEnvFolderPath(wr, config), config);
-        }
+        if (wr) runBackupIfEnabled(wr, config);
         vscode.window.showInformationMessage(`Env Switcher: Removed .env from ${dirLabel}`);
       } else {
         vscode.window.showWarningMessage(`No .env symlink found in ${dirLabel}`);
@@ -686,7 +469,6 @@ function activate(context) {
     })
   );
 
-  // Quick-pick switch command (status bar click / command palette)
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.switchEnv', async () => {
       const workspaceRoot = getWorkspaceRoot();
@@ -695,8 +477,9 @@ function activate(context) {
         return;
       }
 
-      const config = vscode.workspace.getConfiguration('envSwitcher');
-      const envFolderPath = getEnvFolderPath(workspaceRoot, config);
+      const config = readConfig();
+      const envFolderPath = envFolderAbs(workspaceRoot, config);
+      const targetFile = config.get('targetFile', '.env');
 
       if (!fs.existsSync(envFolderPath)) {
         vscode.window.showErrorMessage(
@@ -705,7 +488,10 @@ function activate(context) {
         return;
       }
 
-      const currentActive = getAssignedEnv(workspaceRoot, envFolderPath, config);
+      const pickedDir = await pickTargetDirectory(workspaceRoot, config);
+      if (!pickedDir) return;
+
+      const currentActive = core.getAssignedEnv(pickedDir.absPath, envFolderPath, targetFile);
       const items = buildEnvQuickPickItems(envFolderPath, currentActive);
 
       if (items.length === 0) {
@@ -714,48 +500,51 @@ function activate(context) {
       }
 
       const selected = await vscode.window.showQuickPick(items, {
-        placeHolder: 'Select environment for workspace root',
+        placeHolder: `Select environment for ${pickedDir.label}`,
       });
 
       if (!selected || !selected.envRelPath) return;
 
       try {
-        await createEnvSymlink(workspaceRoot, envFolderPath, selected.envRelPath, config);
+        core.createEnvSymlink(pickedDir.absPath, envFolderPath, selected.envRelPath, targetFile);
         projectFoldersProvider.refresh();
         refreshStatusBar();
-        if (config.get('autoBackup', true)) {
-          backupEnvs(workspaceRoot, envFolderPath, config);
-        }
-        vscode.window.showInformationMessage(`Env Switcher: Switched root to ${selected.envRelPath}`);
+        runBackupIfEnabled(workspaceRoot, config);
+        vscode.window.showInformationMessage(
+          `Env Switcher: Switched ${pickedDir.label} → ${selected.envRelPath}`
+        );
       } catch (err) {
         vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
       }
     })
   );
 
-  // Manual backup command
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.backupNow', () => {
       const wr = getWorkspaceRoot();
       if (!wr) return;
-      const cfg = vscode.workspace.getConfiguration('envSwitcher');
-      const efp = getEnvFolderPath(wr, cfg);
+      const cfg = readConfig();
+      const efp = envFolderAbs(wr, cfg);
       if (!fs.existsSync(efp)) {
         vscode.window.showWarningMessage('Env Switcher: No .envs folder to back up.');
         return;
       }
-      backupEnvs(wr, efp, cfg);
+      core.backupEnvs(wr, efp, {
+        globalStoragePath,
+        envFolderName: cfg.get('envFolder', '.envs'),
+        targetFile: cfg.get('targetFile', '.env'),
+        targetDirectories: cfg.get('targetDirectories'),
+      });
       vscode.window.showInformationMessage('Env Switcher: Backup saved to local storage.');
     })
   );
 
-  // Manual restore command
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.restoreBackup', async () => {
       const wr = getWorkspaceRoot();
       if (!wr) return;
-      const cfg = vscode.workspace.getConfiguration('envSwitcher');
-      const manifest = getBackupManifest(wr);
+      const cfg = readConfig();
+      const manifest = core.getBackupManifest(globalStoragePath, wr);
 
       if (!manifest) {
         vscode.window.showWarningMessage('Env Switcher: No backup found for this workspace.');
@@ -775,7 +564,13 @@ function activate(context) {
       if (!choice) return;
 
       try {
-        const result = await restoreFromBackup(wr, cfg, choice === 'Restore All');
+        const result = await core.restoreFromBackup(
+          wr,
+          cfg.get('envFolder', '.envs'),
+          cfg.get('targetFile', '.env'),
+          globalStoragePath,
+          choice === 'Restore All'
+        );
         envFilesProvider.refresh();
         projectFoldersProvider.refresh();
         refreshStatusBar();
@@ -791,29 +586,27 @@ function activate(context) {
 
   refreshStatusBar();
 
-  // File watcher for live updates
   const workspaceRoot = getWorkspaceRoot();
   if (workspaceRoot) {
     const watcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(workspaceRoot, '{.envs/**,**/.env}')
     );
-    const refreshAll = () => {
-      envFilesProvider.refresh();
-      projectFoldersProvider.refresh();
-      refreshStatusBar();
 
-      const cfg = vscode.workspace.getConfiguration('envSwitcher');
-      if (cfg.get('autoBackup', true)) {
-        const efp = getEnvFolderPath(workspaceRoot, cfg);
-        if (fs.existsSync(efp)) {
-          backupEnvs(workspaceRoot, efp, cfg);
-        }
+    const scheduler = core.createAdaptiveDebouncedScheduler(
+      () => Math.max(0, Number(readConfig().get('backupDebounceMs', 500)) || 0),
+      () => {
+        envFilesProvider.refresh();
+        projectFoldersProvider.refresh();
+        refreshStatusBar();
+        runBackupIfEnabled(workspaceRoot, readConfig());
       }
-    };
-    watcher.onDidChange(refreshAll);
-    watcher.onDidCreate(refreshAll);
-    watcher.onDidDelete(refreshAll);
+    );
+
+    watcher.onDidChange(() => scheduler.schedule());
+    watcher.onDidCreate(() => scheduler.schedule());
+    watcher.onDidDelete(() => scheduler.schedule());
     context.subscriptions.push(watcher);
+    context.subscriptions.push({ dispose: () => scheduler.dispose() });
   }
 }
 
