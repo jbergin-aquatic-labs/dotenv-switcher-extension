@@ -18,6 +18,11 @@ describe('Smoke: package and entrypoints', () => {
     assert.ok(props['envSwitcher.backupDebounceMs']);
     assert.ok(props['envSwitcher.vaultEnabled']);
     assert.ok(props['envSwitcher.vaultMaxVersions']);
+
+    const views = pkg.contributes?.views?.['env-switcher'] || [];
+    const viewIds = views.map((v) => v.id);
+    assert.ok(viewIds.includes('envSwitcher.guide'));
+    assert.ok(viewIds.includes('envSwitcher.envFiles'));
   });
 
   it('requires extension entry without vscode (smoke: no throw on parse)', () => {

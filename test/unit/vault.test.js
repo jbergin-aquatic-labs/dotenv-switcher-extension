@@ -6,6 +6,13 @@ const os = require('os');
 const core = require('../../src/lib/core');
 const vault = require('../../src/lib/vault');
 
+describe('vault: snapshotAbsPath', () => {
+  it('joins snapshots dir and snapshot id', () => {
+    const p = vault.snapshotAbsPath('/vault', '/ws', 'snap1');
+    assert.ok(p.includes(`${path.sep}snapshots${path.sep}snap1`) || p.endsWith(`snapshots${path.sep}snap1`));
+  });
+});
+
 describe('vault: getVaultRoot', () => {
   it('uses global storage path by default', () => {
     const r = vault.getVaultRoot({ globalStoragePath: '/g', location: 'globalStorage' });

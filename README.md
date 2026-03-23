@@ -40,7 +40,7 @@ Configure `envSwitcher.targetDirectories` to `[".", "frontend", "backend"]` so e
 
 ## Usage
 
-- **Activity Bar**: Open the Env Switcher view; use **Env Files** to browse `.envs`, and **Target directories** to assign a file per configured folder (right-click → Assign).
+- **Activity Bar**: Open **Env Switcher**. Start from **Guide & actions** for click-through flows (symlinks, vault, editor backup, settings). Use **Env Files** to browse `.envs`, and **Target directories** to see each symlink target (right-click → Assign / Remove).
 - **Command Palette**: `Env Switcher: Select Environment` (picks a target directory when several are configured, then the env file).
 - **Status Bar**: Click the env summary (shows each target directory and its active file when multiple are configured).
 - **Duplicate**: Right-click an env file → **Duplicate Env File**.

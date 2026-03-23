@@ -28,6 +28,10 @@
     "views": {
       "env-switcher": [
         {
+          "id": "envSwitcher.guide",
+          "name": "Guide & actions"
+        },
+        {
           "id": "envSwitcher.envFiles",
           "name": "Env Files"
         },
@@ -94,6 +98,22 @@
       {
         "command": "envSwitcher.restoreEnvFileFromVault",
         "title": "Restore This File from Vault…"
+      },
+      {
+        "command": "envSwitcher.assignEnvWizard",
+        "title": "Env Switcher: Link a Profile to a Folder…"
+      },
+      {
+        "command": "envSwitcher.unassignEnvWizard",
+        "title": "Env Switcher: Remove .env Symlink from a Folder…"
+      },
+      {
+        "command": "envSwitcher.openEnvSwitcherSettings",
+        "title": "Env Switcher: Open Settings"
+      },
+      {
+        "command": "envSwitcher.vaultSnapshotMenu",
+        "title": "Env Switcher: Vault Snapshot Actions"
       }
     ],
     "configuration": {
@@ -179,7 +199,7 @@
       "view/title": [
         {
           "command": "envSwitcher.refreshEnvList",
-          "when": "view == envSwitcher.envFiles || view == envSwitcher.projectFolders",
+          "when": "view == envSwitcher.guide || view == envSwitcher.envFiles || view == envSwitcher.projectFolders",
           "group": "navigation"
         },
         {
@@ -201,6 +221,21 @@
           "command": "envSwitcher.vaultSnapshotNow",
           "when": "view == envSwitcher.envFiles",
           "group": "navigation@5"
+        },
+        {
+          "command": "envSwitcher.switchEnv",
+          "when": "view == envSwitcher.guide",
+          "group": "navigation@1"
+        },
+        {
+          "command": "envSwitcher.restoreFromVault",
+          "when": "view == envSwitcher.guide",
+          "group": "navigation@2"
+        },
+        {
+          "command": "envSwitcher.openEnvSwitcherSettings",
+          "when": "view == envSwitcher.guide",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -243,8 +278,16 @@
     },
     "viewsWelcome": [
       {
+        "view": "envSwitcher.guide",
+        "contents": "Open a **folder** to use Env Switcher.\n\nYou will need a `.envs` directory at the project root (or accept a restore prompt if a backup exists).\n\n[Open Env Switcher settings](command:envSwitcher.openEnvSwitcherSettings)"
+      },
+      {
         "view": "envSwitcher.envFiles",
-        "contents": "No .envs folder found.\nCreate a `.envs` folder in your workspace root and add your environment files (e.g. `.env.dev`, `.env.production`).\n[Select Environment via Command Palette](command:envSwitcher.switchEnv)"
+        "contents": "No `.envs` folder here yet.\n\n**What this is:** real env files live under `.envs/`. Each **target directory** (see settings) has a **symlink** `.env` → one of those files.\n\n**Setup:** create `.envs/` at the workspace root and add files (e.g. `dev.env`, `prod.env`).\n\n[Switch which profile is linked](command:envSwitcher.switchEnv)\n\nUse **Guide & actions** (first view in this sidebar) for click-through flows, vault history, and backups.\n\n[Open Env Switcher settings](command:envSwitcher.openEnvSwitcherSettings)"
+      },
+      {
+        "view": "envSwitcher.projectFolders",
+        "contents": "**Target directories** are folders that get a `.env` symlink (see `envSwitcher.targetDirectories`).\n\nRight-click a row to **Assign** or **Remove** a link, or use **Guide & actions** → Symlinks for the same steps without the tree.\n\n[Switch active profile](command:envSwitcher.switchEnv)\n\n[Open settings](command:envSwitcher.openEnvSwitcherSettings)"
       }
     ]
   },

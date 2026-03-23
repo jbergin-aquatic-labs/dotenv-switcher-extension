@@ -189,6 +189,10 @@ function getSnapshotManifest(vaultRoot, workspaceRoot, snapshotId) {
   return readManifestAt(path.join(snapRoot, snapshotId));
 }
 
+function snapshotAbsPath(vaultRoot, workspaceRoot, snapshotId) {
+  return path.join(snapshotsDir(vaultRoot, workspaceRoot), snapshotId);
+}
+
 function snapshotFilesRoot(vaultRoot, workspaceRoot, snapshotId) {
   return path.resolve(path.join(snapshotsDir(vaultRoot, workspaceRoot), snapshotId, 'files'));
 }
@@ -232,6 +236,7 @@ module.exports = {
   ensureSecureVaultRoot,
   workspaceVaultDir,
   snapshotsDir,
+  snapshotAbsPath,
   createSnapshot,
   listSnapshots,
   getSnapshotManifest,
