@@ -43,6 +43,7 @@ describe('regression: package.json contract', () => {
       assert.ok(id.startsWith('envSwitcher.'), `View id should be envSwitcher.*: ${id}`);
     }
     assert.ok(ids.includes('envSwitcher.guide'));
+    assert.ok(ids.includes('envSwitcher.vaultHistory'));
     assert.ok(ids.includes('envSwitcher.envFiles'));
     assert.ok(ids.includes('envSwitcher.projectFolders'));
   });
@@ -91,6 +92,7 @@ describe('regression: core library exports (backward compatible surface)', () =>
     'buildEnvQuickPickDescriptors',
     'duplicateEnvFileInFolder',
     'resolveTargetFolderAbs',
+    'discoverLinkedTargetDirectories',
     'createAdaptiveDebouncedScheduler',
   ];
 

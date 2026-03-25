@@ -112,6 +112,7 @@ function createSnapshot(workspaceRoot, envFolderPath, options) {
     targetDirectories,
     maxVersions,
     skipIfUnchanged,
+    snapshotSource,
   } = options;
 
   const allFiles = core.listAllEnvFiles(envFolderPath);
@@ -162,6 +163,7 @@ function createSnapshot(workspaceRoot, envFolderPath, options) {
     fileHashes,
     contentFingerprint: fingerprint,
     assignments,
+    snapshotSource: snapshotSource || 'auto',
   };
 
   fs.writeFileSync(path.join(dest, 'manifest.json'), JSON.stringify(manifest, null, 2));
@@ -180,6 +182,7 @@ function listSnapshots(vaultRoot, workspaceRoot) {
       snapshotId: id,
       createdAt: m?.createdAt || null,
       fileCount: Array.isArray(m?.files) ? m.files.length : 0,
+      snapshotSource: m?.snapshotSource || null,
     };
   });
 }

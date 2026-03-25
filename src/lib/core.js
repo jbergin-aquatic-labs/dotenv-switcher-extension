@@ -316,6 +316,50 @@ function resolveTargetFolderAbs(workspaceRoot, rel) {
 }
 
 /**
+ * Find directories under the workspace that already have a valid .env (or targetFile)
+ * symlink into envFolderPath. Respects excluded folder names while walking.
+ * @param {string} workspaceRoot
+ * @param {string} envFolderPath
+ * @param {string} [targetFile]
+ * @param {Set<string>|string[]} excludedFolders
+ * @returns {string[]} paths relative to workspace (e.g. ".", "apps/web")
+ */
+function discoverLinkedTargetDirectories(workspaceRoot, envFolderPath, targetFile, excludedFolders) {
+  const tf = targetFile || '.env';
+  const excluded = excludedFolders instanceof Set ? excludedFolders : getExcludedFolders(excludedFolders);
+  const found = new Set();
+
+  function visit(dirAbs) {
+    const assigned = getAssignedEnv(dirAbs, envFolderPath, tf);
+    if (assigned) {
+      const rel = path.relative(workspaceRoot, dirAbs);
+      const key = !rel || rel === '' ? '.' : rel.split(path.sep).join('/');
+      found.add(key);
+    }
+
+    let entries;
+    try {
+      entries = fs.readdirSync(dirAbs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      if (excluded.has(ent.name)) continue;
+      visit(path.join(dirAbs, ent.name));
+    }
+  }
+
+  if (!fs.existsSync(workspaceRoot)) return [];
+  visit(workspaceRoot);
+  return [...found].sort((a, b) => {
+    if (a === '.') return -1;
+    if (b === '.') return 1;
+    return a.localeCompare(b);
+  });
+}
+
+/**
  * Debounces calls; delay is re-read from getDelayMs on each schedule() so settings can change.
  * @param {() => number} getDelayMs
  * @param {() => void} fn
@@ -361,5 +405,6 @@ module.exports = {
   buildEnvQuickPickDescriptors,
   duplicateEnvFileInFolder,
   resolveTargetFolderAbs,
+  discoverLinkedTargetDirectories,
   createAdaptiveDebouncedScheduler,
 };
