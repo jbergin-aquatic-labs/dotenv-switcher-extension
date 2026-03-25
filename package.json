@@ -32,6 +32,11 @@
           "name": "Guide & actions"
         },
         {
+          "id": "envSwitcher.vaultHistory",
+          "name": "Local history",
+          "visibility": "visible"
+        },
+        {
           "id": "envSwitcher.envFiles",
           "name": "Env Files"
         },
@@ -104,8 +109,28 @@
         "title": "Env Switcher: Link a Profile to a Folder…"
       },
       {
+        "command": "envSwitcher.assignEnvToFolderBrowse",
+        "title": "Env Switcher: Link a Profile to Any Folder in the Project…"
+      },
+      {
         "command": "envSwitcher.unassignEnvWizard",
         "title": "Env Switcher: Remove .env Symlink from a Folder…"
+      },
+      {
+        "command": "envSwitcher.pinTargetDirectory",
+        "title": "Add to target directories (settings)"
+      },
+      {
+        "command": "envSwitcher.unpinTargetDirectory",
+        "title": "Remove from target directories (keep symlink)"
+      },
+      {
+        "command": "envSwitcher.openLocalHistoryView",
+        "title": "Env Switcher: Show Local History"
+      },
+      {
+        "command": "envSwitcher.vaultHistoryLoadMore",
+        "title": "Env Switcher: Load More Snapshots"
       },
       {
         "command": "envSwitcher.openEnvSwitcherSettings",
@@ -153,10 +178,15 @@
         "envSwitcher.excludedFolders": {
           "type": "array",
           "default": ["node_modules", ".git", ".vscode", "dist", "build", ".next", "coverage", "__pycache__", ".cache"],
-          "description": "Folder names ignored when scanning the workspace (kept for compatibility; target dirs are configured with envSwitcher.targetDirectories).",
+          "description": "Folder names skipped when discovering existing .env symlinks under the workspace (see envSwitcher.includeDiscoveredLinks).",
           "items": {
             "type": "string"
           }
+        },
+        "envSwitcher.includeDiscoveredLinks": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, folders anywhere under the workspace that already have a valid .env → .envs symlink appear in Target directories (alongside envSwitcher.targetDirectories), backups, and vault assignment manifests."
         },
         "envSwitcher.vaultEnabled": {
           "type": "boolean",
@@ -199,8 +229,23 @@
       "view/title": [
         {
           "command": "envSwitcher.refreshEnvList",
-          "when": "view == envSwitcher.guide || view == envSwitcher.envFiles || view == envSwitcher.projectFolders",
+          "when": "view == envSwitcher.guide || view == envSwitcher.envFiles || view == envSwitcher.projectFolders || view == envSwitcher.vaultHistory",
           "group": "navigation"
+        },
+        {
+          "command": "envSwitcher.restoreFromVault",
+          "when": "view == envSwitcher.vaultHistory",
+          "group": "navigation@1"
+        },
+        {
+          "command": "envSwitcher.vaultSnapshotNow",
+          "when": "view == envSwitcher.vaultHistory",
+          "group": "navigation@2"
+        },
+        {
+          "command": "envSwitcher.openVaultFolder",
+          "when": "view == envSwitcher.vaultHistory",
+          "group": "navigation@3"
         },
         {
           "command": "envSwitcher.openEnvFolderExternally",
@@ -241,18 +286,23 @@
       "view/item/context": [
         {
           "command": "envSwitcher.assignEnv",
-          "when": "view == envSwitcher.projectFolders && viewItem == projectFolder",
-          "group": "envSwitcher@1"
-        },
-        {
-          "command": "envSwitcher.assignEnv",
-          "when": "view == envSwitcher.projectFolders && viewItem == projectFolderAssigned",
+          "when": "view == envSwitcher.projectFolders && viewItem =~ /^projectFolder/",
           "group": "envSwitcher@1"
         },
         {
           "command": "envSwitcher.unassignEnv",
-          "when": "view == envSwitcher.projectFolders && viewItem == projectFolderAssigned",
+          "when": "view == envSwitcher.projectFolders && viewItem =~ /^projectFolderAssigned/",
           "group": "envSwitcher@2"
+        },
+        {
+          "command": "envSwitcher.pinTargetDirectory",
+          "when": "view == envSwitcher.projectFolders && viewItem =~ /Discovered$/",
+          "group": "envSwitcher@3"
+        },
+        {
+          "command": "envSwitcher.unpinTargetDirectory",
+          "when": "view == envSwitcher.projectFolders && viewItem =~ /Pinned$/",
+          "group": "envSwitcher@4"
         },
         {
           "command": "envSwitcher.openEnvFile",
@@ -279,15 +329,19 @@
     "viewsWelcome": [
       {
         "view": "envSwitcher.guide",
-        "contents": "Open a **folder** to use Env Switcher.\n\nYou will need a `.envs` directory at the project root (or accept a restore prompt if a backup exists).\n\n[Open Env Switcher settings](command:envSwitcher.openEnvSwitcherSettings)"
+        "contents": "Open a **folder** to use Env Switcher.\n\nYou will need a `.envs` directory at the project root (or accept a restore prompt if a backup exists).\n\n[Show Local history](command:envSwitcher.openLocalHistoryView)\n\n[Open Env Switcher settings](command:envSwitcher.openEnvSwitcherSettings)"
+      },
+      {
+        "view": "envSwitcher.vaultHistory",
+        "contents": "**Local history** lists vault snapshots (newest first), similar to Git’s timeline.\n\nClick a row to **restore** or **open on disk**. New snapshots appear when the vault is enabled and `.envs` or symlinks change.\n\n[Save snapshot now](command:envSwitcher.vaultSnapshotNow)\n\n[Open settings](command:envSwitcher.openEnvSwitcherSettings)"
       },
       {
         "view": "envSwitcher.envFiles",
-        "contents": "No `.envs` folder here yet.\n\n**What this is:** real env files live under `.envs/`. Each **target directory** (see settings) has a **symlink** `.env` → one of those files.\n\n**Setup:** create `.envs/` at the workspace root and add files (e.g. `dev.env`, `prod.env`).\n\n[Switch which profile is linked](command:envSwitcher.switchEnv)\n\nUse **Guide & actions** (first view in this sidebar) for click-through flows, vault history, and backups.\n\n[Open Env Switcher settings](command:envSwitcher.openEnvSwitcherSettings)"
+        "contents": "No `.envs` folder here yet.\n\n**What this is:** real env files live under `.envs/`. Each **target directory** (see settings) has a **symlink** `.env` → one of those files.\n\n**Setup:** create `.envs/` at the workspace root and add files (e.g. `dev.env`, `prod.env`).\n\n[Switch which profile is linked](command:envSwitcher.switchEnv)\n\nUse **Local history** for a Git-style snapshot timeline, and **Guide & actions** for quick steps and backups.\n\n[Open Env Switcher settings](command:envSwitcher.openEnvSwitcherSettings)"
       },
       {
         "view": "envSwitcher.projectFolders",
-        "contents": "**Target directories** are folders that get a `.env` symlink (see `envSwitcher.targetDirectories`).\n\nRight-click a row to **Assign** or **Remove** a link, or use **Guide & actions** → Symlinks for the same steps without the tree.\n\n[Switch active profile](command:envSwitcher.switchEnv)\n\n[Open settings](command:envSwitcher.openEnvSwitcherSettings)"
+        "contents": "**Target directories** lists configured paths (`envSwitcher.targetDirectories`) plus any folder under the project that already has a valid `.env` link (when **Include discovered links** is on).\n\n**Browse:** [Link a profile to any folder…](command:envSwitcher.assignEnvToFolderBrowse)\n\nRight-click **Assign** / **Remove**, or pin a discovered folder to settings.\n\n[Switch active profile](command:envSwitcher.switchEnv)\n\n[Open settings](command:envSwitcher.openEnvSwitcherSettings)"
       }
     ]
   },
