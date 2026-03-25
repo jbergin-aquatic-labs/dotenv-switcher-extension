@@ -110,6 +110,29 @@ describe('core: duplicateEnvFileInFolder', () => {
   });
 });
 
+describe('core: discoverLinkedTargetDirectories', () => {
+  let tmp;
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'env-switcher-'));
+    const envs = path.join(tmp, '.envs');
+    fs.mkdirSync(envs, { recursive: true });
+    fs.writeFileSync(path.join(envs, 'x.env'), 'X=1');
+    fs.mkdirSync(path.join(tmp, 'apps', 'web'), { recursive: true });
+    core.createEnvSymlink(tmp, envs, 'x.env', '.env');
+    core.createEnvSymlink(path.join(tmp, 'apps', 'web'), envs, 'x.env', '.env');
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('finds symlinked folders under the workspace', () => {
+    const envFolder = path.join(tmp, '.envs');
+    const found = core.discoverLinkedTargetDirectories(tmp, envFolder, '.env', core.DEFAULT_EXCLUDED);
+    assert.deepStrictEqual(found, ['.', 'apps/web']);
+  });
+});
+
 describe('core: collectAssignments', () => {
   let tmp;
   before(() => {

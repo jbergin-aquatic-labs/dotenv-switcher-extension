@@ -9,12 +9,14 @@ let statusBarItem;
 let envFilesProvider;
 let projectFoldersProvider;
 let guideActionsProvider;
+let vaultHistoryProvider;
 let globalStoragePath;
 
 function refreshAllTreeViews() {
   envFilesProvider?.refresh();
   projectFoldersProvider?.refresh();
   guideActionsProvider?.refresh();
+  vaultHistoryProvider?.refresh();
 }
 
 function getWorkspaceRoot() {
@@ -29,6 +31,31 @@ function readConfig() {
 
 function envFolderAbs(workspaceRoot, config) {
   return core.getEnvFolderPath(workspaceRoot, config.get('envFolder', '.envs'));
+}
+
+/**
+ * Configured target dirs plus any folders under the workspace that already
+ * have a valid .env → .envs symlink (so monorepo links stay visible without listing every path).
+ */
+function effectiveTargetRelPaths(workspaceRoot, config) {
+  const configured = core.getTargetDirectories(config.get('targetDirectories'));
+  if (!config.get('includeDiscoveredLinks', true)) return configured;
+  const envFolder = envFolderAbs(workspaceRoot, config);
+  if (!fs.existsSync(envFolder)) return configured;
+  const excluded = core.getExcludedFolders(config.get('excludedFolders'));
+  const discovered = core.discoverLinkedTargetDirectories(
+    workspaceRoot,
+    envFolder,
+    config.get('targetFile', '.env'),
+    excluded
+  );
+  const inConfigured = new Set(configured);
+  const extras = discovered.filter((r) => !inConfigured.has(r)).sort((a, b) => {
+    if (a === '.') return -1;
+    if (b === '.') return 1;
+    return a.localeCompare(b);
+  });
+  return [...configured, ...extras];
 }
 
 function buildEnvQuickPickItems(envFolderPath, currentlyAssigned) {
@@ -54,7 +81,7 @@ function runBackupIfEnabled(workspaceRoot, config) {
       globalStoragePath,
       envFolderName: config.get('envFolder', '.envs'),
       targetFile: config.get('targetFile', '.env'),
-      targetDirectories: config.get('targetDirectories'),
+      targetDirectories: effectiveTargetRelPaths(workspaceRoot, config),
     });
   }
 }
@@ -67,10 +94,10 @@ function vaultRootForConfig(config) {
   });
 }
 
-function runVaultSnapshotIfEnabled(workspaceRoot, config) {
+function runVaultSnapshotIfEnabled(workspaceRoot, config, snapshotSource = 'auto') {
   if (!config.get('vaultEnabled', true)) return;
   if (!config.get('vaultAutoSnapshot', true)) return;
-  snapshotVault(workspaceRoot, config, { respectSkipUnchanged: true });
+  snapshotVault(workspaceRoot, config, { respectSkipUnchanged: true, snapshotSource });
 }
 
 /**
@@ -86,9 +113,10 @@ function snapshotVault(workspaceRoot, config, opts = {}) {
       vaultRoot: vaultRootForConfig(config),
       envFolderName: config.get('envFolder', '.envs'),
       targetFile: config.get('targetFile', '.env'),
-      targetDirectories: config.get('targetDirectories'),
+      targetDirectories: effectiveTargetRelPaths(workspaceRoot, config),
       maxVersions: config.get('vaultMaxVersions', 100),
       skipIfUnchanged,
+      snapshotSource: opts.snapshotSource || 'auto',
     });
   } catch (err) {
     console.error('Env Switcher vault snapshot failed', err);
@@ -188,11 +216,16 @@ class ProjectFoldersTreeDataProvider {
       item.description = 'missing path';
       item.contextValue = 'projectFolderMissing';
     } else if (element.assignedEnv) {
-      item.description = `← ${element.assignedEnv}`;
-      item.contextValue = 'projectFolderAssigned';
+      item.description = element.isPinned
+        ? `← ${element.assignedEnv}`
+        : `← ${element.assignedEnv} · scan`;
+      item.contextValue = element.isPinned ? 'projectFolderAssignedPinned' : 'projectFolderAssignedDiscovered';
       item.iconPath = new vscode.ThemeIcon('folder', new vscode.ThemeColor('charts.green'));
     } else {
-      item.contextValue = 'projectFolder';
+      item.contextValue = element.isPinned ? 'projectFolderPinned' : 'projectFolderDiscovered';
+      if (!element.isPinned) {
+        item.description = 'found in tree';
+      }
     }
 
     item.tooltip = element.exists
@@ -209,7 +242,8 @@ class ProjectFoldersTreeDataProvider {
     const config = readConfig();
     const envFolderPath = envFolderAbs(workspaceRoot, config);
     const targetFile = config.get('targetFile', '.env');
-    const targetDirs = core.getTargetDirectories(config.get('targetDirectories'));
+    const targetDirs = effectiveTargetRelPaths(workspaceRoot, config);
+    const configuredSet = new Set(core.getTargetDirectories(config.get('targetDirectories')));
 
     if (!element) {
       return targetDirs.map((rel) => {
@@ -226,6 +260,7 @@ class ProjectFoldersTreeDataProvider {
           isRoot: rel === '.',
           assignedEnv,
           exists,
+          isPinned: configuredSet.has(rel),
         };
       });
     }
@@ -252,7 +287,7 @@ function refreshStatusBar() {
   }
 
   const targetFile = config.get('targetFile', '.env');
-  const targetDirs = core.getTargetDirectories(config.get('targetDirectories'));
+  const targetDirs = effectiveTargetRelPaths(workspaceRoot, config);
   const parts = [];
 
   for (const rel of targetDirs) {
@@ -271,8 +306,33 @@ function refreshStatusBar() {
   statusBarItem.show();
 }
 
+async function mergeTargetDirectoryIntoSettings(config, relPath) {
+  const current = core.getTargetDirectories(config.get('targetDirectories'));
+  const norm = relPath === '' ? '.' : relPath.split(path.sep).join('/');
+  if (current.includes(norm)) return;
+  const next = [...current, norm].sort((a, b) => {
+    if (a === '.') return -1;
+    if (b === '.') return 1;
+    return a.localeCompare(b);
+  });
+  await config.update('targetDirectories', next, vscode.ConfigurationTarget.Workspace);
+}
+
+async function removeTargetDirectoryFromSettings(config, relPath) {
+  const current = core.getTargetDirectories(config.get('targetDirectories'));
+  const norm = relPath === '' ? '.' : relPath.split(path.sep).join('/');
+  const next = current.filter((r) => r !== norm);
+  if (next.length === 0) {
+    vscode.window.showWarningMessage(
+      'Env Switcher: Cannot remove the last target directory from settings. Add another path first, or edit settings.json.'
+    );
+    return;
+  }
+  await config.update('targetDirectories', next, vscode.ConfigurationTarget.Workspace);
+}
+
 async function pickTargetDirectory(workspaceRoot, config) {
-  const targetDirs = core.getTargetDirectories(config.get('targetDirectories'));
+  const targetDirs = effectiveTargetRelPaths(workspaceRoot, config);
   const choices = targetDirs.map((rel) => {
     const abs = core.resolveTargetFolderAbs(workspaceRoot, rel);
     return {
@@ -283,25 +343,41 @@ async function pickTargetDirectory(workspaceRoot, config) {
     };
   });
 
-  if (choices.length === 0) {
+  if (targetDirs.length === 0) {
     vscode.window.showErrorMessage('Env Switcher: No target directories configured.');
     return null;
   }
 
-  if (choices.length === 1) {
-    const c = choices[0];
-    if (!fs.existsSync(c.absPath)) {
-      vscode.window.showErrorMessage(`Env Switcher: Target directory does not exist: ${c.rel}`);
+  if (targetDirs.length === 1) {
+    const rel = targetDirs[0];
+    const absPath = core.resolveTargetFolderAbs(workspaceRoot, rel);
+    if (!fs.existsSync(absPath)) {
+      vscode.window.showErrorMessage(`Env Switcher: Target directory does not exist: ${rel}`);
       return null;
     }
-    return { rel: c.rel, absPath: c.absPath, label: c.rel === '.' ? 'workspace root' : c.rel };
+    return {
+      rel,
+      absPath,
+      label: rel === '.' ? 'workspace root' : rel,
+    };
   }
 
+  choices.push({
+    label: '$(folder-opened) Browse for a folder under this workspace…',
+    description: 'Add to target directories if needed, then link .env',
+    rel: null,
+    absPath: null,
+    browse: true,
+  });
+
   const picked = await vscode.window.showQuickPick(choices, {
-    placeHolder: 'Select target directory for .env symlink',
+    placeHolder: 'Select target directory for .env symlink (or browse anywhere under the project)',
   });
 
   if (!picked) return null;
+  if (picked.browse) {
+    return pickFolderViaBrowse(workspaceRoot, config);
+  }
   if (!fs.existsSync(picked.absPath)) {
     vscode.window.showErrorMessage(`Env Switcher: Target directory does not exist: ${picked.rel}`);
     return null;
@@ -311,6 +387,57 @@ async function pickTargetDirectory(workspaceRoot, config) {
     absPath: picked.absPath,
     label: picked.rel === '.' ? 'workspace root' : picked.rel,
   };
+}
+
+async function pickFolderViaBrowse(workspaceRoot, config) {
+  const defaultUri = vscode.Uri.file(workspaceRoot);
+  const picked = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    defaultUri,
+    openLabel: 'Select folder for .env link',
+    title: 'Env Switcher — choose a folder (workspace tree)',
+  });
+  if (!picked || !picked[0]) return null;
+  const absPath = picked[0].fsPath;
+  const relRaw = path.relative(workspaceRoot, absPath);
+  if (relRaw.startsWith('..') || path.isAbsolute(relRaw)) {
+    vscode.window.showErrorMessage('Env Switcher: Choose a folder inside the open workspace root.');
+    return null;
+  }
+  const rel = !relRaw || relRaw === '' ? '.' : relRaw.split(path.sep).join('/');
+  if (!fs.existsSync(absPath)) {
+    vscode.window.showErrorMessage(`Env Switcher: Folder does not exist: ${rel}`);
+    return null;
+  }
+  await mergeTargetDirectoryIntoSettings(config, rel);
+  vscode.window.showInformationMessage(
+    `Env Switcher: Added "${rel}" to target directories so this link is tracked in settings.`
+  );
+  return {
+    rel,
+    absPath,
+    label: rel === '.' ? 'workspace root' : rel,
+  };
+}
+
+async function assignEnvToBrowsedFolderFlow() {
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('Env Switcher: No workspace folder open.');
+    return;
+  }
+  const config = readConfig();
+  const picked = await pickFolderViaBrowse(workspaceRoot, config);
+  if (!picked) return;
+  const node = {
+    absPath: picked.absPath,
+    relPath: picked.rel === '.' ? '.' : picked.rel,
+    isRoot: picked.rel === '.',
+    exists: true,
+  };
+  await vscode.commands.executeCommand('envSwitcher.assignEnv', node);
 }
 
 async function assignEnvViaWizard() {
@@ -432,7 +559,7 @@ async function restoreFromVaultFlow(wr, cfg, presetSnapshotId) {
       refreshAllTreeViews();
       refreshStatusBar();
       runBackupIfEnabled(wr, cfg);
-      runVaultSnapshotIfEnabled(wr, cfg);
+      runVaultSnapshotIfEnabled(wr, cfg, 'restore');
       vscode.window.showInformationMessage(`Env Switcher: Restored ${restoredCount} file(s) from vault.`);
     } catch (err) {
       vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
@@ -454,16 +581,147 @@ async function restoreFromVaultFlow(wr, cfg, presetSnapshotId) {
     vault.restoreFileToEnvFolder(wr, envFolderPath, vr, pick.snapshotId, filePick.fileRel);
     refreshAllTreeViews();
     runBackupIfEnabled(wr, cfg);
-    runVaultSnapshotIfEnabled(wr, cfg);
+    runVaultSnapshotIfEnabled(wr, cfg, 'restore');
     vscode.window.showInformationMessage(`Env Switcher: Restored ${filePick.fileRel} from vault.`);
   } catch (err) {
     vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
   }
 }
 
-// ─── Guide & actions tree ──────────────────────────────────────────
+// ─── Local history (vault timeline, Git-like) ───────────────────────
 
-const GUIDE_SNAPSHOT_ROWS = 20;
+const VAULT_HISTORY_PAGE = 50;
+
+function formatSnapshotSourceLabel(src) {
+  if (!src || src === 'auto') return '';
+  const map = {
+    manual: 'Manual save',
+    symlink: 'Symlink change',
+    restore: 'Restored from backup/vault',
+  };
+  return map[src] || src;
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '';
+  const diff = Date.now() - t;
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 48) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 14) return `${day}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+class VaultHistoryTreeDataProvider {
+  constructor() {
+    this._onDidChangeTreeData = new vscode.EventEmitter();
+    this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+    this._loadMoreToken = 0;
+  }
+
+  refresh() {
+    this._loadMoreToken = 0;
+    this._onDidChangeTreeData.fire();
+  }
+
+  getTreeItem(element) {
+    if (element.kind === 'hint') {
+      const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
+      item.id = 'envSwitcher.vaultHistory.hint';
+      item.iconPath = new vscode.ThemeIcon('info');
+      item.description = element.description;
+      return item;
+    }
+    if (element.kind === 'loadMore') {
+      const item = new vscode.TreeItem('Load more…', vscode.TreeItemCollapsibleState.None);
+      item.id = 'envSwitcher.vaultHistory.loadMore';
+      item.iconPath = new vscode.ThemeIcon('ellipsis');
+      item.description = element.remaining ? `${element.remaining} older` : '';
+      item.command = {
+        command: 'envSwitcher.vaultHistoryLoadMore',
+        title: 'Load more snapshots',
+      };
+      return item;
+    }
+
+    const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
+    item.id = `envSwitcher.vaultHistory.${element.snapshotId}`;
+    item.iconPath = new vscode.ThemeIcon('git-commit');
+    item.description = element.description;
+    item.tooltip = element.tooltip;
+    item.contextValue = 'vaultSnapshotRow';
+    item.command = {
+      command: 'envSwitcher.vaultSnapshotMenu',
+      title: 'Snapshot actions',
+      arguments: [element.snapshotId],
+    };
+    return item;
+  }
+
+  getChildren(element) {
+    if (element) return [];
+    const wr = getWorkspaceRoot();
+    if (!wr) return [];
+    const cfg = readConfig();
+    if (!cfg.get('vaultEnabled', true)) {
+      return [
+        {
+          kind: 'hint',
+          label: 'Vault is disabled',
+          description: 'Enable envSwitcher.vaultEnabled in settings',
+        },
+      ];
+    }
+    const vr = vaultRootForConfig(cfg);
+    const all = vault.listSnapshots(vr, wr);
+    const pageEnd = Math.min(all.length, VAULT_HISTORY_PAGE + this._loadMoreToken * VAULT_HISTORY_PAGE);
+    const page = all.slice(0, pageEnd);
+    const rows = page.map((s, index) => {
+      const shortId = s.snapshotId.replace(/_\d{3}_\d+$/, '');
+      const when = s.createdAt ? new Date(s.createdAt).toLocaleString() : shortId;
+      const rel = formatRelativeTime(s.createdAt);
+      const src = formatSnapshotSourceLabel(s.snapshotSource);
+      const isHead = index === 0;
+      const label = isHead ? `HEAD — ${when}` : when;
+      const descParts = [`${s.fileCount} files`];
+      if (src) descParts.push(src);
+      if (rel && !isHead) descParts.push(rel);
+      const tooltip = new vscode.MarkdownString();
+      tooltip.appendMarkdown(`**Local snapshot**\n\n`);
+      tooltip.appendMarkdown(`- **When:** ${when}\n`);
+      tooltip.appendMarkdown(`- **Files:** ${s.fileCount}\n`);
+      if (src) tooltip.appendMarkdown(`- **Source:** ${src}\n`);
+      tooltip.appendMarkdown(`\n\`Id:\` \`${s.snapshotId}\`\n\n`);
+      tooltip.appendMarkdown('*Click for restore or open on disk (same as Git history).*');
+      tooltip.isTrusted = true;
+      return {
+        kind: 'commit',
+        snapshotId: s.snapshotId,
+        label,
+        description: descParts.join(' · '),
+        tooltip,
+      };
+    });
+    const remaining = all.length - page.length;
+    if (remaining > 0) {
+      rows.push({ kind: 'loadMore', remaining });
+    }
+    return rows;
+  }
+
+  loadMore() {
+    this._loadMoreToken += 1;
+    this._onDidChangeTreeData.fire();
+  }
+}
+
+// ─── Guide & actions tree ──────────────────────────────────────────
 
 function guideAction(domId, label, description, commandSuffix, iconId) {
   return {
@@ -490,12 +748,7 @@ class GuideActionsTreeDataProvider {
 
   getTreeItem(element) {
     if (element.kind === 'section') {
-      let state = vscode.TreeItemCollapsibleState.Expanded;
-      if (element.id === 'vault:snaps') {
-        state = element.snapCount > 0
-          ? vscode.TreeItemCollapsibleState.Collapsed
-          : vscode.TreeItemCollapsibleState.None;
-      }
+      const state = vscode.TreeItemCollapsibleState.Expanded;
       const item = new vscode.TreeItem(element.label, state);
       item.id = element.domId;
       item.iconPath = new vscode.ThemeIcon(element.icon || 'folder');
@@ -515,20 +768,6 @@ class GuideActionsTreeDataProvider {
         command: element.command,
         title: element.title || element.label,
         arguments: element.args,
-      };
-      return item;
-    }
-
-    if (element.kind === 'snapshot') {
-      const item = new vscode.TreeItem(element.label, vscode.TreeItemCollapsibleState.None);
-      item.id = element.domId;
-      item.iconPath = new vscode.ThemeIcon('history');
-      item.description = element.description;
-      item.tooltip = element.tooltip;
-      item.command = {
-        command: 'envSwitcher.vaultSnapshotMenu',
-        title: 'Vault snapshot actions',
-        arguments: [element.snapshotId],
       };
       return item;
     }
@@ -601,9 +840,16 @@ class GuideActionsTreeDataProvider {
         guideAction(
           'envSwitcher.guide.a2',
           'Link a profile to a folder…',
-          'Same as right-click Assign on Target directories',
+          'Pick from configured target directories',
           'assignEnvWizard',
           'add'
+        ),
+        guideAction(
+          'envSwitcher.guide.a2b',
+          'Link a profile to any folder in the project…',
+          'Browse the tree; path is added to settings',
+          'assignEnvToFolderBrowse',
+          'folder-opened'
         ),
         guideAction(
           'envSwitcher.guide.a3',
@@ -616,8 +862,14 @@ class GuideActionsTreeDataProvider {
     }
 
     if (element.id === 'vault') {
-      const cfg = readConfig();
       const rows = [
+        guideAction(
+          'envSwitcher.guide.v0',
+          'Open Local history view',
+          'Git-style timeline of snapshots (newest first)',
+          'openLocalHistoryView',
+          'timeline'
+        ),
         guideAction(
           'envSwitcher.guide.v1',
           'Save vault snapshot now',
@@ -640,46 +892,7 @@ class GuideActionsTreeDataProvider {
           'folder-opened'
         ),
       ];
-      if (cfg.get('vaultEnabled', true)) {
-        const vr = vaultRootForConfig(cfg);
-        const snaps = vault.listSnapshots(vr, wr);
-        rows.push({
-          kind: 'section',
-          id: 'vault:snaps',
-          domId: 'envSwitcher.guide.vaultSnaps',
-          label: 'Recent snapshots',
-          snapCount: snaps.length,
-          description: snaps.length ? `${snaps.length}` : '0',
-          tooltip: 'Expand, then click a snapshot for open folder or restore',
-          icon: 'timeline',
-        });
-      }
       return rows;
-    }
-
-    if (element.id === 'vault:snaps') {
-      const cfg = readConfig();
-      if (!cfg.get('vaultEnabled', true)) return [];
-      const vr = vaultRootForConfig(cfg);
-      const snaps = vault.listSnapshots(vr, wr).slice(0, GUIDE_SNAPSHOT_ROWS);
-      if (snaps.length === 0) {
-        return [
-          {
-            kind: 'hint',
-            domId: 'envSwitcher.guide.vaultEmpty',
-            label: 'No snapshots yet',
-            description: 'Save one above, or edit .envs with vault auto-snapshot on',
-          },
-        ];
-      }
-      return snaps.map((s) => ({
-        kind: 'snapshot',
-        domId: `envSwitcher.guide.snap.${s.snapshotId}`,
-        snapshotId: s.snapshotId,
-        label: s.createdAt ? new Date(s.createdAt).toLocaleString() : s.snapshotId,
-        description: `${s.fileCount} files`,
-        tooltip: `Id: ${s.snapshotId}\nClick → open folder or restore`,
-      }));
     }
 
     if (element.id === 'backup') {
@@ -732,7 +945,7 @@ function activate(context) {
   const statusTip = new vscode.MarkdownString(
     '**Env Switcher** — active `.envs` profile per target directory.\n\n'
       + 'Click to pick a folder (if you have several), then the env file to symlink as `.env`.\n\n'
-      + 'Use the **Guide & actions** view in this sidebar for step-by-step flows, vault history, and backups.'
+      + 'Use **Local history** for a Git-style timeline of vault snapshots, and **Guide & actions** for quick steps and backups.'
   );
   statusTip.isTrusted = true;
   statusBarItem.tooltip = statusTip;
@@ -741,9 +954,11 @@ function activate(context) {
   envFilesProvider = new EnvFilesTreeDataProvider();
   projectFoldersProvider = new ProjectFoldersTreeDataProvider();
   guideActionsProvider = new GuideActionsTreeDataProvider();
+  vaultHistoryProvider = new VaultHistoryTreeDataProvider();
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('envSwitcher.guide', guideActionsProvider),
+    vscode.window.registerTreeDataProvider('envSwitcher.vaultHistory', vaultHistoryProvider),
     vscode.window.registerTreeDataProvider('envSwitcher.envFiles', envFilesProvider),
     vscode.window.registerTreeDataProvider('envSwitcher.projectFolders', projectFoldersProvider),
   );
@@ -778,7 +993,7 @@ function activate(context) {
                 );
                 refreshAllTreeViews();
                 refreshStatusBar();
-                runVaultSnapshotIfEnabled(workspaceRootInit, configInit);
+                runVaultSnapshotIfEnabled(workspaceRootInit, configInit, 'restore');
                 const msg = choice === 'Restore All'
                   ? `Restored ${result.restoredCount} env files and symlink assignments.`
                   : `Restored ${result.restoredCount} env files.`;
@@ -808,7 +1023,48 @@ function activate(context) {
     vscode.commands.registerCommand('envSwitcher.assignEnvWizard', assignEnvViaWizard)
   );
   context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.assignEnvToFolderBrowse', assignEnvToBrowsedFolderFlow)
+  );
+  context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.unassignEnvWizard', unassignEnvViaWizard)
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.pinTargetDirectory', async (node) => {
+      if (!node || !node.relPath) return;
+      const cfg = readConfig();
+      await mergeTargetDirectoryIntoSettings(cfg, node.relPath === '.' ? '.' : node.relPath);
+      refreshAllTreeViews();
+      vscode.window.showInformationMessage(
+        `Env Switcher: Pinned "${node.relPath === '.' ? '.' : node.relPath}" in target directories.`
+      );
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.unpinTargetDirectory', async (node) => {
+      if (!node || !node.relPath) return;
+      const cfg = readConfig();
+      await removeTargetDirectoryFromSettings(cfg, node.relPath === '.' ? '.' : node.relPath);
+      refreshAllTreeViews();
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.openLocalHistoryView', async () => {
+      try {
+        await vscode.commands.executeCommand('workbench.view.extension.env-switcher');
+      } catch {
+        // ignore
+      }
+      try {
+        await vscode.commands.executeCommand('envSwitcher.vaultHistory.focus');
+      } catch {
+        // ignore if API differs
+      }
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('envSwitcher.vaultHistoryLoadMore', () => {
+      vaultHistoryProvider?.loadMore();
+    })
   );
   context.subscriptions.push(
     vscode.commands.registerCommand('envSwitcher.openEnvSwitcherSettings', openEnvSwitcherSettings)
@@ -950,7 +1206,7 @@ function activate(context) {
         refreshAllTreeViews();
         refreshStatusBar();
         runBackupIfEnabled(workspaceRoot, config);
-        runVaultSnapshotIfEnabled(workspaceRoot, config);
+        runVaultSnapshotIfEnabled(workspaceRoot, config, 'symlink');
         vscode.window.showInformationMessage(
           `Env Switcher: Assigned ${selected.envRelPath} → ${dirLabel}`
         );
@@ -982,7 +1238,7 @@ function activate(context) {
         const wr = getWorkspaceRoot();
         if (wr) {
           runBackupIfEnabled(wr, config);
-          runVaultSnapshotIfEnabled(wr, config);
+          runVaultSnapshotIfEnabled(wr, config, 'symlink');
         }
         vscode.window.showInformationMessage(`Env Switcher: Removed .env from ${dirLabel}`);
       } else {
@@ -1032,7 +1288,7 @@ function activate(context) {
         refreshAllTreeViews();
         refreshStatusBar();
         runBackupIfEnabled(workspaceRoot, config);
-        runVaultSnapshotIfEnabled(workspaceRoot, config);
+        runVaultSnapshotIfEnabled(workspaceRoot, config, 'symlink');
         vscode.window.showInformationMessage(
           `Env Switcher: Switched ${pickedDir.label} → ${selected.envRelPath}`
         );
@@ -1056,7 +1312,7 @@ function activate(context) {
         globalStoragePath,
         envFolderName: cfg.get('envFolder', '.envs'),
         targetFile: cfg.get('targetFile', '.env'),
-        targetDirectories: cfg.get('targetDirectories'),
+        targetDirectories: effectiveTargetRelPaths(wr, cfg),
       });
       runVaultSnapshotIfEnabled(wr, cfg);
       vscode.window.showInformationMessage('Env Switcher: Backup saved to local storage.');
@@ -1077,7 +1333,7 @@ function activate(context) {
         vscode.window.showWarningMessage('Env Switcher: No .envs folder to snapshot.');
         return;
       }
-      const result = snapshotVault(wr, cfg, { respectSkipUnchanged: false });
+      const result = snapshotVault(wr, cfg, { respectSkipUnchanged: false, snapshotSource: 'manual' });
       if (!result) {
         vscode.window.showErrorMessage('Env Switcher: Vault snapshot failed.');
         return;
@@ -1154,7 +1410,7 @@ function activate(context) {
         vault.restoreFileToEnvFolder(wr, envFolderPath, vr, pick.snapshotId, node.relPath);
         refreshAllTreeViews();
         runBackupIfEnabled(wr, cfg);
-        runVaultSnapshotIfEnabled(wr, cfg);
+        runVaultSnapshotIfEnabled(wr, cfg, 'restore');
         vscode.window.showInformationMessage(`Env Switcher: Restored ${node.relPath} from vault.`);
       } catch (err) {
         vscode.window.showErrorMessage(`Env Switcher: ${err.message}`);
@@ -1196,7 +1452,7 @@ function activate(context) {
         );
         refreshAllTreeViews();
         refreshStatusBar();
-        runVaultSnapshotIfEnabled(wr, cfg);
+        runVaultSnapshotIfEnabled(wr, cfg, 'restore');
         const msg = choice === 'Restore All'
           ? `Restored ${result.restoredCount} env files and symlink assignments.`
           : `Restored ${result.restoredCount} env files.`;
